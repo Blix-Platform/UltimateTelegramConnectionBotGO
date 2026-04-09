@@ -120,37 +120,55 @@ print_step "ШАГ 2/7: Загрузка файлов проекта"
 
 # Get latest commit (or latest [UP] commit)
 print_info "Получение последнего коммита..."
-COMMITS_RAW=$(curl -fsSL --max-time 15 "https://api.github.com/repos/$REPO/commits?per_page=10" 2>/dev/null || echo "")
+TEMP_DIR_INSTALL=$(mktemp -d)
+COMMITS_FILE="$TEMP_DIR_INSTALL/commits.json"
+CURL_EXIT=0
+curl -fsSL --max-time 15 "https://api.github.com/repos/$REPO/commits?per_page=10" -o "$COMMITS_FILE" 2>"$TEMP_DIR_INSTALL/curl_err" || CURL_EXIT=$?
+
+if [ "$CURL_EXIT" -ne 0 ] || [ ! -s "$COMMITS_FILE" ]; then
+    print_error "Не удалось получить коммиты (curl exit=$CURL_EXIT)"
+    rm -rf "$TEMP_DIR_INSTALL"
+    exit 1
+fi
 
 TARGET_COMMIT=""
 TARGET_VER="dev"
 
-if [ -n "$COMMITS_RAW" ]; then
-    # Try to find first [UP] commit
-    while IFS= read -r SHA_LINE; do
-        SHA=$(echo "$SHA_LINE" | sed 's/"sha":"//;s/"//')
-        [ -z "$SHA" ] && continue
+if [ -s "$COMMITS_FILE" ]; then
+    # Try to find first [UP] commit using Python for reliable JSON parsing
+    if command -v python3 &> /dev/null; then
+        while IFS='|' read -r LINE; do
+            [ -z "$LINE" ] && continue
+            SHA=$(echo "$LINE" | cut -d'|' -f1)
+            MSG=$(echo "$LINE" | cut -d'|' -f2-)
 
-        # Get commit detail
-        COMMIT_DETAIL=$(curl -fsSL --max-time 10 "https://api.github.com/repos/$REPO/commits/$SHA" 2>/dev/null || echo "")
-        MSG=$(echo "$COMMIT_DETAIL" | grep -o '"message":"[^"]*"' | head -1 | sed 's/"message":"//;s/"//')
+            if echo "$MSG" | grep -qi '^\[UP\]'; then
+                TARGET_COMMIT="$SHA"
+                MSG_CLEAN=$(echo "$MSG" | sed 's/^\[UP\][[:space:]]*//;s/^\[up\][[:space:]]*//')
+                TARGET_VER="$MSG_CLEAN"
+                break
+            fi
+        done < <(python3 -c "
+import json
+try:
+    data = json.load(open('$COMMITS_FILE'))
+    for c in data:
+        sha = c.get('sha','')
+        msg = c.get('commit',{}).get('message','')
+        print(f'{sha}|{msg}')
+except: pass
+" 2>/dev/null)
+    fi
 
-        if echo "$MSG" | grep -qi '^\[UP\]'; then
-            TARGET_COMMIT="$SHA"
-            MSG_CLEAN=$(echo "$MSG" | sed 's/^\[UP\][[:space:]]*//;s/^\[up\][[:space:]]*//')
-            TARGET_VER="$MSG_CLEAN"
-            break
-        fi
-    done < <(echo "$COMMITS_RAW" | grep -o '"sha":"[^"]*"')
-
-    # Fallback to latest commit
+    # Fallback to grep with whitespace-tolerant pattern
     if [ -z "$TARGET_COMMIT" ]; then
-        TARGET_COMMIT=$(echo "$COMMITS_RAW" | grep -o '"sha":"[^"]*"' | head -1 | sed 's/"sha":"//;s/"//')
+        TARGET_COMMIT=$(grep '"sha"' "$COMMITS_FILE" | head -1 | sed 's/.*"sha"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
     fi
 fi
 
 if [ -z "$TARGET_COMMIT" ]; then
     print_error "Не удалось получить коммиты"
+    rm -rf "$TEMP_DIR_INSTALL"
     exit 1
 fi
 
@@ -159,7 +177,7 @@ print_success "Коммит: ${TARGET_COMMIT:0:7}"
 echo -e "${YELLOW}ℹ️  Загрузка файлов из коммита...${NC}"
 
 TEMP_DIR=$(mktemp -d)
-trap "rm -rf $TEMP_DIR" EXIT
+trap "rm -rf $TEMP_DIR $TEMP_DIR_INSTALL" EXIT
 
 # Download essential files directly from commit
 FILES_NEEDED=("cmd/bot/main.go" "go.mod" "go.sum" "update.sh" "install.sh" "uninstall.sh" "update.bat" "install.bat" "uninstall.bat")

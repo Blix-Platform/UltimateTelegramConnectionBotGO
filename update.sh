@@ -42,6 +42,21 @@ print_info() {
     echo -e "${YELLOW}ℹ️  $1${NC}"
 }
 
+parse_json_sha() {
+    # Extract SHA from JSON line — handles both "sha":"X" and "sha": "X"
+    echo "$1" | sed 's/.*"sha"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/'
+}
+
+parse_json_filename() {
+    # Extract filename from JSON line
+    echo "$1" | sed 's/.*"filename"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/'
+}
+
+parse_json_message() {
+    # Extract message from JSON line
+    echo "$1" | sed 's/.*"message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/'
+}
+
 print_header
 
 if [ "$EUID" -ne 0 ]; then
@@ -86,12 +101,21 @@ if [ "$POST_UPDATE" = false ]; then
 
     print_info "Запрос коммитов с [UP]..."
 
-    # Get commit list — parse with python3 if available, else fallback
+    # Get commit list
     COMMITS_FILE="$TEMP_DIR/commits.json"
-    curl -fsSL --max-time 15 "https://api.github.com/repos/$REPO/commits?per_page=50" -o "$COMMITS_FILE" 2>/dev/null
+    CURL_EXIT=0
+    curl -fsSL --max-time 15 "https://api.github.com/repos/$REPO/commits?per_page=50" -o "$COMMITS_FILE" 2>"$TEMP_DIR/curl_err" || CURL_EXIT=$?
 
-    if [ ! -f "$COMMITS_FILE" ]; then
-        print_error "Не удалось получить коммиты"
+    if [ "$CURL_EXIT" -ne 0 ] || [ ! -s "$COMMITS_FILE" ]; then
+        ERR_MSG=""
+        if [ -f "$TEMP_DIR/curl_err" ]; then
+            ERR_MSG=$(cat "$TEMP_DIR/curl_err")
+        fi
+        print_error "Не удалось получить коммиты (curl exit=$CURL_EXIT)"
+        if [ -n "$ERR_MSG" ]; then
+            print_info "Ошибка: $ERR_MSG"
+        fi
+        print_info "Проверьте интернет-соединение и доступ к api.github.com"
         exit 1
     fi
 
@@ -100,7 +124,7 @@ if [ "$POST_UPDATE" = false ]; then
     FOUND_CURRENT=false
 
     if command -v python3 &> /dev/null; then
-        # Parse with Python
+        # Parse with Python — reliable JSON parsing
         while IFS='|' read -r LINE; do
             [ -z "$LINE" ] && continue
             SHA=$(echo "$LINE" | cut -d'|' -f1)
@@ -128,8 +152,8 @@ try:
 except: pass
 " 2>/dev/null)
     else
-        # Fallback: just use latest commit
-        UP_COMMIT=$(curl -fsSL --max-time 10 "https://api.github.com/repos/$REPO/commits?per_page=1" 2>/dev/null | grep -o '"sha":"[^"]*"' | head -1 | sed 's/"sha":"//;s/"//')
+        # Fallback: use latest commit with grep (whitespace-tolerant)
+        UP_COMMIT=$(grep '"sha"' "$COMMITS_FILE" | head -1 | parse_json_sha)
         UP_MESSAGE="latest commit"
     fi
 
@@ -140,7 +164,7 @@ except: pass
             exit 0
         fi
         print_info "Коммитов [UP] не найдено, используется последний коммит"
-        UP_COMMIT=$(grep -o '"sha":"[^"]*"' "$COMMITS_FILE" | head -1 | sed 's/"sha":"//;s/"//')
+        UP_COMMIT=$(grep '"sha"' "$COMMITS_FILE" | head -1 | parse_json_sha)
         if [ -n "$CURRENT_COMMIT" ] && [ "$UP_COMMIT" = "$CURRENT_COMMIT" ]; then
             print_success "У вас последняя версия: ${CURRENT_COMMIT:0:7}"
             rm -rf "$TEMP_DIR"
@@ -159,19 +183,30 @@ except: pass
     print_step "ШАГ 3/4: Загрузка изменённых файлов"
 
     # Get commit detail to list changed files
-    COMMIT_DETAIL=$(curl -fsSL --max-time 15 "https://api.github.com/repos/$REPO/commits/$UP_COMMIT" 2>/dev/null || echo "")
-
-    if [ -z "$COMMIT_DETAIL" ]; then
+    curl -fsSL --max-time 15 "https://api.github.com/repos/$REPO/commits/$UP_COMMIT" -o "$TEMP_DIR/commit_detail.json" 2>/dev/null || {
         print_error "Не удалось получить детали коммита"
         exit 1
-    fi
-
-    # Extract filenames
-    FILE_LIST=$(echo "$COMMIT_DETAIL" | grep -o '"filename":"[^"]*"' | sed 's/"filename":"//;s/"//')
+    }
 
     UPDATED=0
     SKIPPED=0
     ERRORS=0
+
+    # Extract filenames with Python or fallback to grep
+    if command -v python3 &> /dev/null; then
+        FILE_LIST=$(python3 -c "
+import json
+try:
+    data = json.load(open('$TEMP_DIR/commit_detail.json'))
+    for f in data.get('files', []):
+        print(f.get('filename', ''))
+except: pass
+" 2>/dev/null)
+    else
+        FILE_LIST=$(grep '"filename"' "$TEMP_DIR/commit_detail.json" | while IFS= read -r line; do
+            parse_json_filename "$line"
+        done)
+    fi
 
     while IFS= read -r FILE; do
         [ -z "$FILE" ] && continue
