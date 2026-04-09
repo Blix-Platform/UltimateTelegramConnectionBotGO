@@ -71,14 +71,19 @@ if [ "$POST_UPDATE" = false ]; then
     fi
 
     print_info "Проверка последней версии..."
-    LATEST_TAG=$(curl -fsSL https://api.github.com/repos/Blix-Platform/UltimateTelegramConnectionBotGO/releases/latest | grep -oP '"tag_name":\s*"\K[^"]+')
+    if ! command -v jq &> /dev/null; then
+        apt-get update -qq && apt-get install -y -qq jq
+    fi
 
-    if [ -z "$LATEST_TAG" ]; then
+    LATEST_TAG=$(curl -fsSL https://api.github.com/repos/Blix-Platform/UltimateTelegramConnectionBotGO/releases/latest | jq -r '.tag_name')
+
+    if [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" = "null" ]; then
         print_error "Не удалось получить информацию о релизе"
         exit 1
     fi
 
     LATEST_VER=$(echo "$LATEST_TAG" | sed 's/^v//')
+    ZIP_URL="https://github.com/Blix-Platform/UltimateTelegramConnectionBotGO/archive/refs/tags/${LATEST_TAG}.zip"
 
     if [ -f "$INSTALL_DIR/.version" ]; then
         CURRENT_VER=$(cat "$INSTALL_DIR/.version")
@@ -96,8 +101,12 @@ if [ "$POST_UPDATE" = false ]; then
     TEMP_DIR=$(mktemp -d)
     trap "rm -rf $TEMP_DIR" EXIT
 
-    ZIP_URL=$(curl -fsSL https://api.github.com/repos/Blix-Platform/UltimateTelegramConnectionBotGO/releases/latest | grep -oP '"zipball_url":\s*"\K[^"]+')
     curl -fsSL -L "$ZIP_URL" -o "$TEMP_DIR/release.zip"
+
+    if [ ! -f "$TEMP_DIR/release.zip" ] || [ ! -s "$TEMP_DIR/release.zip" ]; then
+        print_error "Не удалось загрузить релиз"
+        exit 1
+    fi
 
     print_success "Релиз загружен"
 
@@ -108,8 +117,8 @@ if [ "$POST_UPDATE" = false ]; then
 
     SRC_DIR=$(find "$TEMP_DIR/extracted" -mindepth 1 -maxdepth 1 -type d | head -1)
 
-    if [ -z "$SRC_DIR" ] || [ ! -d "$SRC_DIR/cmd" ]; then
-        print_error "Не найдены исходные файлы"
+    if [ -z "$SRC_DIR" ]; then
+        print_error "Не удалось распаковать архив"
         exit 1
     fi
 

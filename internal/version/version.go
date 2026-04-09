@@ -17,10 +17,11 @@ type ReleaseInfo struct {
 	TagName    string `json:"tag_name"`
 	ZipballURL string `json:"zipball_url"`
 	Name       string `json:"name"`
+	Prerelease bool   `json:"prerelease"`
 }
 
 func CheckUpdate() (*ReleaseInfo, error) {
-	resp, err := http.Get(fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", Repo))
+	resp, err := http.Get(fmt.Sprintf("https://api.github.com/repos/%s/releases", Repo))
 	if err != nil {
 		return nil, fmt.Errorf("ошибка проверки обновлений: %v", err)
 	}
@@ -35,12 +36,57 @@ func CheckUpdate() (*ReleaseInfo, error) {
 		return nil, fmt.Errorf("ошибка чтения ответа: %v", err)
 	}
 
-	var release ReleaseInfo
-	if err := json.Unmarshal(body, &release); err != nil {
+	var releases []ReleaseInfo
+	if err := json.Unmarshal(body, &releases); err != nil {
 		return nil, fmt.Errorf("ошибка парсинга: %v", err)
 	}
 
-	return &release, nil
+	if len(releases) == 0 {
+		return nil, fmt.Errorf("релизы не найдены")
+	}
+
+	var latest *ReleaseInfo
+	var latestIsPre bool
+
+	for i := range releases {
+		r := &releases[i]
+		if r.TagName == "" {
+			continue
+		}
+		if latest == nil {
+			latest = r
+			latestIsPre = r.Prerelease
+			continue
+		}
+
+		isPre := r.Prerelease
+		cmp := CompareVersions(r.TagName, latest.TagName)
+
+		if isPre && !latestIsPre {
+			if cmp > 0 {
+				latest = r
+				latestIsPre = isPre
+			}
+		} else if !isPre && latestIsPre {
+			if cmp >= 0 {
+				latest = r
+				latestIsPre = isPre
+			}
+		} else {
+			if cmp > 0 {
+				latest = r
+				latestIsPre = isPre
+			}
+		}
+	}
+
+	if latest == nil {
+		return nil, fmt.Errorf("не найдено валидных релизов")
+	}
+
+	latest.ZipballURL = fmt.Sprintf("https://github.com/%s/archive/refs/tags/%s.zip", Repo, latest.TagName)
+
+	return latest, nil
 }
 
 func IsUpdateAvailable(latest string) bool {
