@@ -70,6 +70,10 @@ if [ "$POST_UPDATE" = false ]; then
         apt-get update -qq && apt-get install -y -qq curl
     fi
 
+    if ! command -v unzip &> /dev/null; then
+        apt-get install -y -qq unzip
+    fi
+
     print_info "Проверка последней версии..."
 
     RELEASES=$(curl -fsSL --max-time 10 https://api.github.com/repos/Blix-Platform/UltimateTelegramConnectionBotGO/releases 2>/dev/null || echo "[]")
@@ -117,7 +121,7 @@ if [ "$POST_UPDATE" = false ]; then
     print_success "Релиз загружен"
 
     echo ""
-    print_step "ШАГ 3/4: Распаковка и установка"
+    print_step "ШАГ 3/4: Распаковка и обновление файлов"
 
     unzip -q "$TEMP_DIR/release.zip" -d "$TEMP_DIR/extracted"
 
@@ -130,19 +134,34 @@ if [ "$POST_UPDATE" = false ]; then
 
     BACKUP_ENV=$(cat "$INSTALL_DIR/.env" 2>/dev/null || echo "")
 
-    cp -r "$SRC_DIR/cmd" "$INSTALL_DIR/"
-    cp -r "$SRC_DIR/internal" "$INSTALL_DIR/"
-    cp "$SRC_DIR/go.mod" "$INSTALL_DIR/"
-    cp "$SRC_DIR/go.sum" "$INSTALL_DIR/" 2>/dev/null || true
-    cp "$SRC_DIR/update.sh" "$INSTALL_DIR/"
-    cp "$SRC_DIR/install.sh" "$INSTALL_DIR/"
-    chmod +x "$INSTALL_DIR/update.sh" "$INSTALL_DIR/install.sh"
+    UPDATED=0
+    SKIPPED=0
+
+    for FILE in cmd/bot/main.go go.mod go.sum update.sh install.sh uninstall.sh update.bat install.bat uninstall.bat; do
+        if [ -f "$SRC_DIR/$FILE" ]; then
+            if [ -f "$INSTALL_DIR/$FILE" ] && diff -q "$SRC_DIR/$FILE" "$INSTALL_DIR/$FILE" > /dev/null 2>&1; then
+                SKIPPED=$((SKIPPED + 1))
+            else
+                mkdir -p "$(dirname "$INSTALL_DIR/$FILE")"
+                cp "$SRC_DIR/$FILE" "$INSTALL_DIR/$FILE"
+                UPDATED=$((UPDATED + 1))
+            fi
+        fi
+    done
+
+    if [ -d "$SRC_DIR/internal" ]; then
+        rsync -a --delete "$SRC_DIR/internal/" "$INSTALL_DIR/internal/" 2>/dev/null || cp -r "$SRC_DIR/internal" "$INSTALL_DIR/"
+    fi
 
     echo -e "$BACKUP_ENV" > "$INSTALL_DIR/.env"
     chmod 600 "$INSTALL_DIR/.env"
     echo "$LATEST_VER" > "$INSTALL_DIR/.version"
 
-    print_success "Файлы обновлены"
+    chmod +x "$INSTALL_DIR/update.sh" "$INSTALL_DIR/install.sh" 2>/dev/null
+    chmod +x "$INSTALL_DIR/update.bat" "$INSTALL_DIR/install.bat" "$INSTALL_DIR/uninstall.bat" "$INSTALL_DIR/uninstall.sh" 2>/dev/null
+
+    print_success "Обновлено файлов: $UPDATED"
+    print_info "Пропущено файлов: $SKIPPED"
 
     echo ""
     print_step "ШАГ 4/4: Сборка и перезапуск"
@@ -163,6 +182,13 @@ if [ "$POST_UPDATE" = true ] || true; then
 
     chmod +x "$INSTALL_DIR/tgbot"
     print_success "Бот собран"
+
+    # Fetch latest [UP] commit SHA
+    LATEST_COMMIT=$(curl -fsSL --max-time 5 "https://api.github.com/repos/Blix-Platform/UltimateTelegramConnectionBotGO/commits?per_page=1" 2>/dev/null | grep -o '"sha":"[^"]*"' | head -1 | sed 's/"sha":"//;s/"//')
+    if [ -n "$LATEST_COMMIT" ]; then
+        echo "$LATEST_COMMIT" > "$INSTALL_DIR/.commit"
+        print_success "Commit SHA сохранён: ${LATEST_COMMIT:0:7}"
+    fi
 
     echo ""
 
@@ -207,5 +233,9 @@ echo -e "${GREEN}║${NC}                                                       
 echo -e "${GREEN}╚══════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "${WHITE}Версия: ${CYAN}v$(cat "$INSTALL_DIR/.version" 2>/dev/null || echo 'неизвестна')${NC}"
+if [ -f "$INSTALL_DIR/.commit" ]; then
+    COMMIT_SHA=$(cat "$INSTALL_DIR/.commit")
+    echo -e "${WHITE}Commit: ${CYAN}${COMMIT_SHA:0:7}${NC}"
+fi
 echo -e "${WHITE}Все данные сохранены. Бот работает.${NC}"
 echo ""

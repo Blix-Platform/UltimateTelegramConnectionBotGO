@@ -1,6 +1,7 @@
 package version
 
 import (
+	"crypto/md5"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,6 +19,22 @@ type ReleaseInfo struct {
 	ZipballURL string `json:"zipball_url"`
 	Name       string `json:"name"`
 	Prerelease bool   `json:"prerelease"`
+}
+
+type CommitInfo struct {
+	SHA       string   `json:"sha"`
+	Message   string   `json:"message"`
+	Filenames []string `json:"-"`
+}
+
+type GitHubCommit struct {
+	SHA     string `json:"sha"`
+	Commit  struct {
+		Message string `json:"message"`
+	} `json:"commit"`
+	Files []struct {
+		Filename string `json:"filename"`
+	} `json:"files"`
 }
 
 func CheckUpdate() (*ReleaseInfo, error) {
@@ -91,6 +108,68 @@ func CheckUpdate() (*ReleaseInfo, error) {
 	latest.ZipballURL = fmt.Sprintf("https://github.com/%s/archive/refs/tags/%s.zip", Repo, latest.TagName)
 
 	return latest, nil
+}
+
+func CheckUPCommits(currentCommit string) ([]CommitInfo, error) {
+	resp, err := http.Get(fmt.Sprintf("https://api.github.com/repos/%s/commits?per_page=50", Repo))
+	if err != nil {
+		return nil, fmt.Errorf("ошибка проверки коммитов: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("GitHub API вернул статус %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("ошибка чтения ответа: %v", err)
+	}
+
+	var commits []GitHubCommit
+	if err := json.Unmarshal(body, &commits); err != nil {
+		return nil, fmt.Errorf("ошибка парсинга: %v", err)
+	}
+
+	var result []CommitInfo
+	for _, c := range commits {
+		if !strings.HasPrefix(c.Commit.Message, "[UP]") && !strings.HasPrefix(c.Commit.Message, "[up]") {
+			continue
+		}
+		if c.SHA == currentCommit {
+			break
+		}
+		var filenames []string
+		for _, f := range c.Files {
+			filenames = append(filenames, f.Filename)
+		}
+		result = append(result, CommitInfo{
+			SHA:       c.SHA,
+			Message:   strings.TrimSpace(strings.TrimPrefix(c.Commit.Message, "[UP]")),
+			Filenames: filenames,
+		})
+	}
+
+	return result, nil
+}
+
+func GetFileContent(filePath string, ref string) ([]byte, error) {
+	url := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s", Repo, ref, filePath)
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("файл %s не найден (статус %d)", filePath, resp.StatusCode)
+	}
+
+	return io.ReadAll(resp.Body)
+}
+
+func FileMD5(content []byte) string {
+	return fmt.Sprintf("%x", md5.Sum(content))
 }
 
 func IsUpdateAvailable(latest string) bool {

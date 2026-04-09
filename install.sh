@@ -220,6 +220,13 @@ go build -o tgbot ./cmd/bot/
 
 chmod +x "$INSTALL_DIR/tgbot"
 
+# Fetch latest commit SHA
+LATEST_COMMIT=$(curl -fsSL --max-time 5 "https://api.github.com/repos/Blix-Platform/UltimateTelegramConnectionBotGO/commits?per_page=1" 2>/dev/null | grep -o '"sha":"[^"]*"' | head -1 | sed 's/"sha":"//;s/"//')
+if [ -n "$LATEST_COMMIT" ]; then
+    echo "$LATEST_COMMIT" > "$INSTALL_DIR/.commit"
+    print_success "Commit SHA сохранён: ${LATEST_COMMIT:0:7}"
+fi
+
 print_success "Бот собран"
 
 echo ""
@@ -323,6 +330,10 @@ echo -e "${WHITE}📁 Директория:${NC}       ${CYAN}$INSTALL_DIR${NC}"
 echo -e "${WHITE}⚙️  Конфиг:${NC}          ${CYAN}$INSTALL_DIR/.env${NC}"
 echo -e "${WHITE}🗃  База данных:${NC}      ${CYAN}$INSTALL_DIR/bot.db${NC}"
 echo -e "${WHITE}📦 Версия:${NC}            ${CYAN}v$LATEST_VER${NC}"
+if [ -f "$INSTALL_DIR/.commit" ]; then
+    COMMIT_SHA=$(cat "$INSTALL_DIR/.commit")
+    echo -e "${WHITE}🔖 Commit:${NC}           ${CYAN}${COMMIT_SHA:0:7}${NC}"
+fi
 echo ""
 if [ "$HAS_SYSTEMD" = true ]; then
     echo -e "${WHITE}${BOLD}Управление сервисом:${NC}"

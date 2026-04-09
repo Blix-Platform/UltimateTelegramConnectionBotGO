@@ -34,6 +34,7 @@ echo.
 set "INSTALL_DIR=%~dp0tgbot"
 set "SERVICE_NAME=TGConnectionBot"
 
+:: ── 1/5: Remove Scheduled Task ──
 echo [1/5] Удаление из Планировщика заданий...
 schtasks /query /tn "%SERVICE_NAME%" >nul 2>&1
 if %errorlevel% equ 0 (
@@ -43,6 +44,7 @@ if %errorlevel% equ 0 (
     echo [i] Задача не найдена
 )
 
+:: ── 2/5: Stop Process ──
 echo.
 echo [2/5] Остановка процесса...
 taskkill /im tgbot.exe /f >nul 2>&1
@@ -52,6 +54,7 @@ if %errorlevel% equ 0 (
     echo [i] Процесс не запущен
 )
 
+:: ── 3/5: Remove Directory ──
 echo.
 echo [3/5] Удаление директории...
 if exist "%INSTALL_DIR%" (
@@ -61,6 +64,7 @@ if exist "%INSTALL_DIR%" (
     echo [i] Директория не найдена
 )
 
+:: ── 4/5: Remove leftover files ──
 echo.
 echo [4/5] Удаление файлов из текущей папки...
 del /f /q "%~dp0tgbot.exe" >nul 2>&1
@@ -68,6 +72,7 @@ del /f /q "%~dp0bot.db" >nul 2>&1
 del /f /q "%~dp0.settings" >nul 2>&1
 echo [+] Временные файлы удалены
 
+:: ── 5/5: Cleanup Logs ──
 echo.
 echo [5/5] Очистка логов...
 del /f /q "%INSTALL_DIR%.log" >nul 2>&1

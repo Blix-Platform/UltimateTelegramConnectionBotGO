@@ -1,11 +1,8 @@
 package handler
 
 import (
-	"archive/zip"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -283,69 +280,100 @@ func (h *Handler) handleUpdate(message *tgbotapi.Message) {
 		return
 	}
 
+	execPath, _ := os.Executable()
+	installDir := filepath.Dir(execPath)
+	commitFile := filepath.Join(installDir, ".commit")
+
+	currentCommit := ""
+	if data, err := os.ReadFile(commitFile); err == nil {
+		currentCommit = strings.TrimSpace(string(data))
+	}
+
 	currentVer := version.VersionString()
 	h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("⏳ Проверка обновлений...\nТекущая версия: v%s", currentVer)))
 
-	release, err := version.CheckUpdate()
+	commits, err := version.CheckUPCommits(currentCommit)
 	if err != nil {
 		h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("❌ %s", err.Error())))
 		return
 	}
 
-	latestVer := strings.TrimPrefix(release.TagName, "v")
-
-	if !version.IsUpdateAvailable(latestVer) {
-		h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("✅ У вас последняя версия: v%s", currentVer)))
+	if len(commits) == 0 {
+		h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, "✅ У вас последняя версия. Нет доступных обновлений [UP]."))
 		return
 	}
 
-	updateLabel := latestVer
-	if release.TagName == "main" {
-		updateLabel = "main (последняя)"
+	var summary strings.Builder
+	summary.WriteString(fmt.Sprintf("📦 Найдено обновлений [UP]: %d\n\n", len(commits)))
+	for i, c := range commits {
+		msg := c.Message
+		if len(msg) > 80 {
+			msg = msg[:80] + "..."
+		}
+		summary.WriteString(fmt.Sprintf("%d. %s\n   Файлов: %d\n", i+1, msg, len(c.Filenames)))
+	}
+	summary.WriteString("\n⬇️ Загрузка изменённых файлов...")
+
+	h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, summary.String()))
+
+	totalUpdated := 0
+	totalSkipped := 0
+	totalErrors := 0
+
+	for _, commit := range commits {
+		h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("🔄 Применяю: %s", commit.Message)))
+
+		for _, fname := range commit.Filenames {
+			if !isUpdateableFile(fname) {
+				totalSkipped++
+				continue
+			}
+
+			content, err := version.GetFileContent(fname, commit.SHA)
+			if err != nil {
+				h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("⚠️ Пропуск %s: %s", fname, err.Error())))
+				totalErrors++
+				continue
+			}
+
+			localPath := filepath.Join(installDir, fname)
+			skip := false
+			if existing, err := os.ReadFile(localPath); err == nil {
+				if version.FileMD5(existing) == version.FileMD5(content) {
+					skip = true
+				}
+			}
+
+			if skip {
+				totalSkipped++
+				continue
+			}
+
+			os.MkdirAll(filepath.Dir(localPath), 0755)
+			if err := os.WriteFile(localPath, content, 0644); err != nil {
+				h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("❌ Ошибка записи %s: %s", fname, err.Error())))
+				totalErrors++
+				continue
+			}
+
+			totalUpdated++
+		}
 	}
 
-	h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("📦 Найдено обновление: %s\nЗагрузка и установка...", updateLabel)))
+	os.WriteFile(commitFile, []byte(commits[0].SHA), 0644)
 
-	execPath, _ := os.Executable()
-	installDir := filepath.Dir(execPath)
+	resultMsg := fmt.Sprintf("✅ Обновление применено!\n\n"+
+		"📝 Обновлено файлов: %d\n"+
+		"⏭️ Пропущено (без изменений): %d\n"+
+		"❌ Ошибок: %d\n\n"+
+		"Текущий коммит: %s", totalUpdated, totalSkipped, totalErrors, commits[0].SHA[:7])
 
-	tempDir, err := os.MkdirTemp("", "tgbot-update-*")
-	if err != nil {
-		h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("❌ Ошибка создания временной директории: %s", err.Error())))
-		return
-	}
-	defer os.RemoveAll(tempDir)
-
-	zipPath := filepath.Join(tempDir, "release.zip")
-	if err := downloadFile(zipPath, release.ZipballURL); err != nil {
-		h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("❌ Ошибка загрузки: %s", err.Error())))
-		return
-	}
-
-	if err := unzipFile(zipPath, tempDir); err != nil {
-		h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("❌ Ошибка распаковки: %s", err.Error())))
-		return
-	}
-
-	srcDir, err := findSourceDir(tempDir)
-	if err != nil {
-		h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("❌ Не найдены исходные файлы: %s", err.Error())))
-		return
-	}
-
-	for _, name := range []string{"cmd", "internal", "go.mod", "go.sum", "update.sh"} {
-		src := filepath.Join(srcDir, name)
-		dst := filepath.Join(installDir, name)
-		os.RemoveAll(dst)
-		copyPath(src, dst)
-	}
+	h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, resultMsg))
 
 	updateScript := filepath.Join(installDir, "update.sh")
 	os.Chmod(updateScript, 0755)
 
-	h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("✅ Система обновлена!\nv%s → %s", currentVer, latestVer)))
-
-	cmd := exec.Command("sudo", "bash", filepath.Join(installDir, "update.sh"), "--post-update")
+	cmd := exec.Command("sudo", "bash", updateScript, "--post-update")
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	err = cmd.Start()
@@ -361,87 +389,23 @@ func (h *Handler) handleUpdate(message *tgbotapi.Message) {
 	}()
 }
 
-func downloadFile(path, url string) error {
-	resp, err := http.Get(url)
-	if err != nil {
-		return err
+func isUpdateableFile(fname string) bool {
+	parts := strings.Split(fname, "/")
+	if len(parts) < 2 {
+		return false
 	}
-	defer resp.Body.Close()
-
-	out, err := os.Create(path)
-	if err != nil {
-		return err
+	switch parts[0] {
+	case "cmd", "internal":
+		return true
 	}
-	defer out.Close()
-
-	_, err = io.Copy(out, resp.Body)
-	return err
+	ext := filepath.Ext(fname)
+	switch ext {
+	case ".go", ".mod", ".sum", ".sh":
+		return true
+	}
+	return false
 }
 
-func unzipFile(zipPath, destDir string) error {
-	r, err := zip.OpenReader(zipPath)
-	if err != nil {
-		return err
-	}
-	defer r.Close()
-
-	for _, f := range r.File {
-		fpath := filepath.Join(destDir, f.Name)
-		if !strings.HasPrefix(fpath, filepath.Clean(destDir)+string(os.PathSeparator)) {
-			continue
-		}
-		if f.FileInfo().IsDir() {
-			os.MkdirAll(fpath, os.ModePerm)
-			continue
-		}
-		os.MkdirAll(filepath.Dir(fpath), os.ModePerm)
-		out, err := os.Create(fpath)
-		if err != nil {
-			return err
-		}
-		rc, err := f.Open()
-		if err != nil {
-			out.Close()
-			return err
-		}
-		io.Copy(out, rc)
-		out.Close()
-		rc.Close()
-	}
-	return nil
-}
-
-func findSourceDir(base string) (string, error) {
-	entries, err := os.ReadDir(base)
-	if err != nil {
-		return "", err
-	}
-	for _, e := range entries {
-		name := e.Name()
-		if e.IsDir() && (strings.Contains(name, "Blix-Platform") || strings.Contains(name, "pavlyska") || strings.Contains(name, "UltimateTelegram")) {
-			return filepath.Join(base, name), nil
-		}
-	}
-	return base, nil
-}
-
-func copyPath(src, dst string) error {
-	info, err := os.Stat(src)
-	if err != nil {
-		return err
-	}
-	if info.IsDir() {
-		os.MkdirAll(dst, 0755)
-		entries, _ := os.ReadDir(src)
-		for _, e := range entries {
-			copyPath(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name()))
-		}
-	} else {
-		data, _ := os.ReadFile(src)
-		os.WriteFile(dst, data, 0644)
-	}
-	return nil
-}
 
 func (h *Handler) handleSettings(message *tgbotapi.Message) {
 	if message.Chat.ID != h.adminID {
@@ -569,20 +533,25 @@ func (h *Handler) handleVersion(message *tgbotapi.Message) {
 		return
 	}
 
+	execPath, _ := os.Executable()
+	installDir := filepath.Dir(execPath)
+	commitFile := filepath.Join(installDir, ".commit")
+
 	currentVer := version.VersionString()
 	info := fmt.Sprintf("📦 Текущая версия: <b>v%s</b>", currentVer)
 
-	release, err := version.CheckUpdate()
-	if err == nil {
-		latestVer := release.TagName
-		if latestVer != "main" {
-			latestVer = "v" + strings.TrimPrefix(latestVer, "v")
+	if data, err := os.ReadFile(commitFile); err == nil {
+		sha := strings.TrimSpace(string(data))
+		if len(sha) >= 7 {
+			info += fmt.Sprintf("\n🔖 Коммит: <code>%s</code>", sha[:7])
 		}
-		if version.IsUpdateAvailable(release.TagName) {
-			info += fmt.Sprintf("\n🆕 Доступна: <b>%s</b>\n\nИспользуйте /update для обновления", latestVer)
-		} else {
-			info += "\n✅ У вас последняя версия"
-		}
+	}
+
+	commits, err := version.CheckUPCommits("")
+	if err == nil && len(commits) > 0 {
+		info += fmt.Sprintf("\n🆕 Доступно обновлений [UP]: <b>%d</b>\n\nИспользуйте /update для обновления", len(commits))
+	} else {
+		info += "\n✅ У вас последняя версия"
 	}
 
 	msg := tgbotapi.NewMessage(message.Chat.ID, info)

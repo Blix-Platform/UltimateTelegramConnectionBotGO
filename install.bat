@@ -13,6 +13,7 @@ echo ║                                                          ║
 echo ╚══════════════════════════════════════════════════════════╝
 echo.
 
+:: ── Check Go ──
 echo ┌──────────────────────────────────────────────────────────┐
 echo │  ШАГ 1/5: Проверка Go
 echo └──────────────────────────────────────────────────────────┘
@@ -34,6 +35,7 @@ for /f "tokens=*" %%i in ('go version') do set GO_VERSION=%%i
 echo [+] Go найден: %GO_VERSION%
 echo.
 
+:: ── Bot Data Input ──
 echo ┌──────────────────────────────────────────────────────────┐
 echo │  ШАГ 2/5: Ввод данных бота
 echo └──────────────────────────────────────────────────────────┘
@@ -60,6 +62,7 @@ echo.
 echo [+] Данные получены
 echo.
 
+:: ── Create Directory ──
 echo ┌──────────────────────────────────────────────────────────┐
 echo │  ШАГ 3/5: Создание директории
 echo └──────────────────────────────────────────────────────────┘
@@ -76,6 +79,7 @@ mkdir "%INSTALL_DIR%" 2>nul
 echo [+] Директория создана: %INSTALL_DIR%
 echo.
 
+:: ── Copy & Build ──
 echo ┌──────────────────────────────────────────────────────────┐
 echo │  ШАГ 4/5: Копирование и сборка
 echo └──────────────────────────────────────────────────────────┘
@@ -87,6 +91,12 @@ xcopy "%SCRIPT_DIR%cmd" "%INSTALL_DIR%\cmd\" /E /I /Q >nul
 xcopy "%SCRIPT_DIR%internal" "%INSTALL_DIR%\internal\" /E /I /Q >nul
 copy "%SCRIPT_DIR%go.mod" "%INSTALL_DIR%\" >nul
 copy "%SCRIPT_DIR%go.sum" "%INSTALL_DIR%\" >nul 2>nul
+copy "%SCRIPT_DIR%update.bat" "%INSTALL_DIR%\" >nul 2>nul
+copy "%SCRIPT_DIR%install.bat" "%INSTALL_DIR%\" >nul 2>nul
+copy "%SCRIPT_DIR%uninstall.bat" "%INSTALL_DIR%\" >nul 2>nul
+copy "%SCRIPT_DIR%update.sh" "%INSTALL_DIR%\" >nul 2>nul
+copy "%SCRIPT_DIR%install.sh" "%INSTALL_DIR%\" >nul 2>nul
+copy "%SCRIPT_DIR%uninstall.sh" "%INSTALL_DIR%\" >nul 2>nul
 
 echo [+] Файлы скопированы
 echo.
@@ -108,6 +118,7 @@ if not exist "%INSTALL_DIR%\tgbot.exe" (
 echo [+] Бот собран успешно
 echo.
 
+:: ── Save Config ──
 echo ┌──────────────────────────────────────────────────────────┐
 echo │  ШАГ 5/5: Настройка сервиса
 echo └──────────────────────────────────────────────────────────┘
