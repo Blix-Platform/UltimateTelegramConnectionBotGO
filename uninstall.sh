@@ -121,6 +121,4 @@ echo -e "${GREEN}║${NC}                                                       
 echo -e "${GREEN}╚══════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "${WHITE}Все данные, настройки и сервисы удалены.${NC}"
-echo -e "${WHITE}Для повторной установки запустите:${NC}"
-echo -e "${CYAN}  sudo bash install.sh${NC}"
 echo ""

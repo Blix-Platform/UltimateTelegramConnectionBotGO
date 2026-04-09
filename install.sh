@@ -12,6 +12,7 @@ NC='\033[0m'
 
 SERVICE_NAME="tgbot"
 INSTALL_DIR="/opt/tgbot"
+REPO_URL="https://github.com/Blix-Platform/UltimateTelegramConnectionBotGO.git"
 
 print_header() {
     echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
@@ -49,7 +50,7 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-print_step "ШАГ 1/6: Проверка зависимостей"
+print_step "ШАГ 1/7: Проверка зависимостей"
 
 if ! command -v go &> /dev/null; then
     print_info "Go не установлен. Установка..."
@@ -63,7 +64,7 @@ fi
 
 print_info "Установка build-зависимостей для SQLite..."
 apt-get update -qq
-apt-get install -y -qq build-essential gcc libsqlite3-dev
+apt-get install -y -qq build-essential gcc libsqlite3-dev git
 print_success "Build-зависимости установлены"
 
 if command -v systemctl &> /dev/null; then
@@ -75,7 +76,32 @@ else
 fi
 
 echo ""
-print_step "ШАГ 2/6: Ввод данных бота"
+print_step "ШАГ 2/7: Получение исходного кода"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TEMP_CLONE=false
+
+if [ -d "$SCRIPT_DIR/cmd" ] && [ -d "$SCRIPT_DIR/internal" ]; then
+    print_success "Исходный код найден в текущей директории"
+    SOURCE_DIR="$SCRIPT_DIR"
+else
+    print_info "Исходный код не найден. Клонирование репозитория..."
+
+    TEMP_DIR=$(mktemp -d)
+    git clone --depth 1 "$REPO_URL" "$TEMP_DIR" 2>/dev/null
+
+    if [ -d "$TEMP_DIR/cmd" ] && [ -d "$TEMP_DIR/internal" ]; then
+        SOURCE_DIR="$TEMP_DIR"
+        TEMP_CLONE=true
+        print_success "Репозиторий клонирован"
+    else
+        print_error "Не удалось клонировать репозиторий"
+        exit 1
+    fi
+fi
+
+echo ""
+print_step "ШАГ 3/7: Ввод данных бота"
 
 echo -e "${WHITE}${BOLD}Введите токен бота от @BotFather:${NC}"
 echo -e "${YELLOW}Пример: 123456789:ABCdefGHIjklMNOpqrsTUVwxyz${NC}"
@@ -103,25 +129,27 @@ done
 print_success "Данные получены"
 echo ""
 
-print_step "ШАГ 3/6: Создание директории"
+print_step "ШАГ 4/7: Создание директории"
 
 mkdir -p "$INSTALL_DIR"
 print_success "Директория создана: $INSTALL_DIR"
 
 echo ""
-print_step "ШАГ 4/6: Копирование файлов"
+print_step "ШАГ 5/7: Копирование файлов"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-cp -r "$SCRIPT_DIR/cmd" "$INSTALL_DIR/"
-cp -r "$SCRIPT_DIR/internal" "$INSTALL_DIR/"
-cp "$SCRIPT_DIR/go.mod" "$INSTALL_DIR/"
-cp "$SCRIPT_DIR/go.sum" "$INSTALL_DIR/" 2>/dev/null || true
+cp -r "$SOURCE_DIR/cmd" "$INSTALL_DIR/"
+cp -r "$SOURCE_DIR/internal" "$INSTALL_DIR/"
+cp "$SOURCE_DIR/go.mod" "$INSTALL_DIR/"
+cp "$SOURCE_DIR/go.sum" "$INSTALL_DIR/" 2>/dev/null || true
 
 print_success "Файлы скопированы"
 
+if [ "$TEMP_CLONE" = true ]; then
+    rm -rf "$TEMP_DIR"
+fi
+
 echo ""
-print_step "ШАГ 5/6: Сборка проекта"
+print_step "ШАГ 6/7: Сборка проекта"
 
 cd "$INSTALL_DIR"
 
@@ -144,7 +172,7 @@ chmod 600 "$INSTALL_DIR/.env"
 print_success "Конфигурация сохранена"
 
 echo ""
-print_step "ШАГ 6/6: Настройка сервиса"
+print_step "ШАГ 7/7: Настройка сервиса"
 
 if [ "$HAS_SYSTEMD" = true ]; then
     cat > /etc/systemd/system/${SERVICE_NAME}.service <<EOF
@@ -230,9 +258,9 @@ echo -e "${GREEN}╚════════════════════
 echo ""
 echo -e "${WHITE}${BOLD}Установка завершена!${NC}"
 echo ""
-echo -e "${WHITE}📁 Директория:${NC}    ${CYAN}$INSTALL_DIR${NC}"
-echo -e "${WHITE}⚙️  Конфиг:${NC}       ${CYAN}$INSTALL_DIR/.env${NC}"
-echo -e "${WHITE}📂 Настройки бота:${NC} ${CYAN}$INSTALL_DIR/settings.json${NC}"
+echo -e "${WHITE}📁 Директория:${NC}       ${CYAN}$INSTALL_DIR${NC}"
+echo -e "${WHITE}⚙️  Конфиг:${NC}          ${CYAN}$INSTALL_DIR/.env${NC}"
+echo -e "${WHITE}🗃  База данных:${NC}      ${CYAN}$INSTALL_DIR/bot.db${NC}"
 echo ""
 if [ "$HAS_SYSTEMD" = true ]; then
     echo -e "${WHITE}${BOLD}Управление сервисом:${NC}"
