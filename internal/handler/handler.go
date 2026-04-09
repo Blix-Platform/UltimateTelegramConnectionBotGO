@@ -532,8 +532,6 @@ func (h *Handler) handleCallback(cb *tgbotapi.CallbackQuery) {
 		h.handleAddLink(cb)
 	case cb.Data == "delete_button":
 		h.handleDeleteButton(cb)
-	case cb.Data == "link_cancel":
-		h.handleLinkCancel(cb)
 	}
 }
 
@@ -867,28 +865,21 @@ func (h *Handler) handleEditButton(cb *tgbotapi.CallbackQuery) {
 	}
 
 	preview := currentValue
-	if len(preview) > 300 {
-		preview = preview[:300] + "..."
+	if len(preview) > 500 {
+		preview = preview[:500] + "..."
 	}
 
-	photoInfo := ""
-	if h.settings.HasPhoto(key) {
-		photoInfo = "\n\n📷 <b>Прикреплённое фото:</b> да"
-	}
-
-	btnLabel, btnURL, hasButton := h.settings.GetButton(key)
+	btnLabel, _, hasButton := h.settings.GetButton(key)
 	btnInfo := ""
 	if hasButton {
-		btnInfo = fmt.Sprintf("\n🔗 <b>Кнопка:</b> %s → %s", btnLabel, btnURL)
+		btnInfo = fmt.Sprintf("\n🔗 <b>Кнопка:</b> %s", btnLabel)
 	}
 
 	safeLabel := strings.ReplaceAll(label, "/", "&#47;")
-	safePreview := strings.ReplaceAll(preview, "<", "&lt;")
-	safePreview = strings.ReplaceAll(safePreview, ">", "&gt;")
 
 	text := fmt.Sprintf(
-		"📝 %s\n\n📌 Текущее значение:\n<code>%s</code>%s%s\n\n✏️ Отправьте сообщение для изменения:",
-		safeLabel, safePreview, photoInfo, btnInfo,
+		"📝 %s\n\n📌 Текущее значение:\n%s%s\n\n✏️ Отправьте сообщение для изменения:",
+		safeLabel, preview, btnInfo,
 	)
 
 	// Build inline keyboard with action buttons
@@ -913,16 +904,25 @@ func (h *Handler) handleEditButton(cb *tgbotapi.CallbackQuery) {
 		))
 	}
 
-	// Cancel button
+	// Back to categories
 	actionRows = append(actionRows, tgbotapi.NewInlineKeyboardRow(
-		tgbotapi.NewInlineKeyboardButtonData("❌ Отмена", "link_cancel"),
+		tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад к категориям", "back_to_categories"),
 	))
 	keyboard.InlineKeyboard = actionRows
 
-	msg := tgbotapi.NewMessage(cb.Message.Chat.ID, text)
-	msg.ParseMode = "HTML"
-	msg.ReplyMarkup = keyboard
-	h.bot.Send(msg)
+	photoFileID := h.settings.GetPhoto(key)
+	if photoFileID != "" {
+		msg := tgbotapi.NewPhoto(cb.Message.Chat.ID, tgbotapi.FileID(photoFileID))
+		msg.Caption = text
+		msg.ParseMode = "HTML"
+		msg.ReplyMarkup = keyboard
+		h.bot.Send(msg)
+	} else {
+		msg := tgbotapi.NewMessage(cb.Message.Chat.ID, text)
+		msg.ParseMode = "HTML"
+		msg.ReplyMarkup = keyboard
+		h.bot.Send(msg)
+	}
 
 	h.mu.Lock()
 	h.editingAdmins[cb.Message.Chat.ID] = key
@@ -1027,32 +1027,6 @@ func (h *Handler) handleDeleteButton(cb *tgbotapi.CallbackQuery) {
 		ID:      cb.ID,
 	}
 	h.handleEditButton(fakeCB)
-}
-
-func (h *Handler) handleLinkCancel(cb *tgbotapi.CallbackQuery) {
-	h.mu.Lock()
-	delete(h.linkStep, cb.Message.Chat.ID)
-	delete(h.linkKey, cb.Message.Chat.ID)
-	delete(h.linkData, cb.Message.Chat.ID)
-	h.mu.Unlock()
-
-	h.bot.Request(tgbotapi.DeleteMessageConfig{
-		ChatID:    cb.Message.Chat.ID,
-		MessageID: cb.Message.MessageID,
-	})
-
-	h.mu.Lock()
-	key := h.editingAdmins[cb.Message.Chat.ID]
-	h.mu.Unlock()
-
-	if key != "" {
-		fakeCB := &tgbotapi.CallbackQuery{
-			Message: cb.Message,
-			Data:    "edit_" + key,
-			ID:      cb.ID,
-		}
-		h.handleEditButton(fakeCB)
-	}
 }
 
 func (h *Handler) handleCancelCommand(message *tgbotapi.Message) {
@@ -1288,121 +1262,87 @@ func isSupportedContent(message *tgbotapi.Message) bool {
 // Handles: bold, italic, underline, strikethrough, code, pre, text_link, text_mention.
 func messageEntitiesToHTML(text string, entities []tgbotapi.MessageEntity) string {
 	if len(entities) == 0 {
-		// Escape HTML entities in plain text
-		text = strings.ReplaceAll(text, "&", "&amp;")
-		text = strings.ReplaceAll(text, "<", "&lt;")
-		text = strings.ReplaceAll(text, ">", "&gt;")
-		return text
+		return escapeHTML(text)
 	}
 
-	type tag struct {
-		Start int
-		End   int
-		Open  bool
-		HTML  string
+	type boundary struct {
+		Offset int
+		Tags   []string
 	}
-
-	var tags []tag
+	var boundaries []boundary
 	runes := []rune(text)
 
 	for _, e := range entities {
 		start := e.Offset
-		length := e.Length
-		end := start + length
+		end := e.Offset + e.Length
 
 		switch e.Type {
-		case "bold":
-			tags = append(tags, tag{start, end, true, "<b>"})
-			tags = append(tags, tag{start, end, false, "</b>"})
-		case "italic":
-			tags = append(tags, tag{start, end, true, "<i>"})
-			tags = append(tags, tag{start, end, false, "</i>"})
-		case "underline":
-			tags = append(tags, tag{start, end, true, "<u>"})
-			tags = append(tags, tag{start, end, false, "</u>"})
-		case "strikethrough":
-			tags = append(tags, tag{start, end, true, "<s>"})
-			tags = append(tags, tag{start, end, false, "</s>"})
-		case "code":
-			tags = append(tags, tag{start, end, true, "<code>"})
-			tags = append(tags, tag{start, end, false, "</code>"})
-		case "pre":
-			tags = append(tags, tag{start, end, true, "<pre>"})
-			tags = append(tags, tag{start, end, false, "</pre>"})
 		case "text_link":
-			linkText := string(runes[start:end])
-			escaped := strings.ReplaceAll(e.URL, "&", "&amp;")
-			escaped = strings.ReplaceAll(escaped, "\"", "&quot;")
-			// Replace the text with an HTML link
-			text = string(runes[:start]) + fmt.Sprintf("<a href=\"%s\">%s</a>", escaped, linkText) + string(runes[end:])
-			// Skip further processing for this range
+			linkText := escapeHTML(string(runes[start:end]))
+			url := strings.ReplaceAll(e.URL, "&", "&amp;")
+			url = strings.ReplaceAll(url, "\"", "&quot;")
+			boundaries = append(boundaries, boundary{start, []string{fmt.Sprintf("<a href=\"%s\">%s</a>", url, linkText)}})
 			continue
 		case "text_mention":
-			name := string(runes[start:end])
-			text = string(runes[:start]) + fmt.Sprintf("<a href=\"tg://user?id=%d\">%s</a>", e.User.ID, name) + string(runes[end:])
+			boundaries = append(boundaries, boundary{start, []string{fmt.Sprintf("<a href=\"tg://user?id=%d\">%s</a>", e.User.ID, escapeHTML(string(runes[start:end])))}})
 			continue
+		case "bold":
+			boundaries = append(boundaries, boundary{start, []string{"<b>"}})
+			boundaries = append(boundaries, boundary{end, []string{"</b>"}})
+		case "italic":
+			boundaries = append(boundaries, boundary{start, []string{"<i>"}})
+			boundaries = append(boundaries, boundary{end, []string{"</i>"}})
+		case "underline":
+			boundaries = append(boundaries, boundary{start, []string{"<u>"}})
+			boundaries = append(boundaries, boundary{end, []string{"</u>"}})
+		case "strikethrough":
+			boundaries = append(boundaries, boundary{start, []string{"<s>"}})
+			boundaries = append(boundaries, boundary{end, []string{"</s>"}})
+		case "code":
+			boundaries = append(boundaries, boundary{start, []string{"<code>"}})
+			boundaries = append(boundaries, boundary{end, []string{"</code>"}})
+		case "pre":
+			boundaries = append(boundaries, boundary{start, []string{"<pre>"}})
+			boundaries = append(boundaries, boundary{end, []string{"</pre>"}})
 		}
 	}
 
-	// Sort tags by position (open tags first at same position)
-	// We need to rebuild the text with tags inserted
-	// Simpler approach: iterate through runes and apply open/close tags at boundaries
-
-	type boundary struct {
-		Pos  int
-		Tags []string
-	}
-
-	boundaries := make(map[int][]string)
-	for _, t := range tags {
-		if t.Open {
-			boundaries[t.Start] = append(boundaries[t.Start], t.HTML)
-		} else {
-			boundaries[t.End] = append(boundaries[t.End], t.HTML)
-		}
-	}
-
-	// Collect unique positions
-	var positions []int
-	for pos := range boundaries {
-		positions = append(positions, pos)
-	}
-	// Sort positions
-	for i := 0; i < len(positions); i++ {
-		for j := i + 1; j < len(positions); j++ {
-			if positions[i] > positions[j] {
-				positions[i], positions[j] = positions[j], positions[i]
+	// Sort by offset
+	for i := 0; i < len(boundaries); i++ {
+		for j := i + 1; j < len(boundaries); j++ {
+			if boundaries[i].Offset > boundaries[j].Offset {
+				boundaries[i], boundaries[j] = boundaries[j], boundaries[i]
 			}
 		}
 	}
 
 	var result strings.Builder
 	prev := 0
-	for _, pos := range positions {
-		// Write text from prev to pos
-		if pos > len(runes) {
-			pos = len(runes)
+	for _, b := range boundaries {
+		if b.Offset < prev {
+			continue
 		}
-		if pos > prev {
-			chunk := string(runes[prev:pos])
-			chunk = strings.ReplaceAll(chunk, "&", "&amp;")
-			chunk = strings.ReplaceAll(chunk, "<", "&lt;")
-			chunk = strings.ReplaceAll(chunk, ">", "&gt;")
-			result.WriteString(chunk)
+		if b.Offset > len(runes) {
+			b.Offset = len(runes)
 		}
-		// Write tags
-		for _, tag := range boundaries[pos] {
+		if b.Offset > prev {
+			result.WriteString(escapeHTML(string(runes[prev:b.Offset])))
+		}
+		for _, tag := range b.Tags {
 			result.WriteString(tag)
 		}
-		prev = pos
+		prev = b.Offset
 	}
 	if prev < len(runes) {
-		chunk := string(runes[prev:])
-		chunk = strings.ReplaceAll(chunk, "&", "&amp;")
-		chunk = strings.ReplaceAll(chunk, "<", "&lt;")
-		chunk = strings.ReplaceAll(chunk, ">", "&gt;")
-		result.WriteString(chunk)
+		result.WriteString(escapeHTML(string(runes[prev:])))
 	}
 
 	return result.String()
+}
+
+func escapeHTML(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	return s
 }
