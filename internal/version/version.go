@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
 const (
-	Current = "1.0.0"
+	Current = "1.0.0" // Не меняйте этот парметр а то не будут приходить уведомления!!!!
 	Repo    = "Blix-Platform/UltimateTelegramConnectionBotGO"
 )
 
@@ -207,6 +209,16 @@ func IsUpdateAvailable(latest string) bool {
 }
 
 func VersionString() string {
+	// Try to read from .version file next to the executable
+	if execPath, err := os.Executable(); err == nil {
+		versionFile := filepath.Join(filepath.Dir(execPath), ".version")
+		if data, err := os.ReadFile(versionFile); err == nil {
+			v := strings.TrimSpace(string(data))
+			if v != "" && v != "dev" {
+				return v
+			}
+		}
+	}
 	return Current
 }
 

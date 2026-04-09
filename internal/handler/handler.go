@@ -267,19 +267,41 @@ func (h *Handler) handleUnban(message *tgbotapi.Message) {
 	}
 
 	args := strings.Fields(message.Text)
-	if len(args) < 2 {
-		h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, "Использование: /unban <user_id>"))
-		return
+
+	var userID int64
+	var parseErr string
+
+	if message.ReplyToMessage != nil {
+		originalID := message.ReplyToMessage.MessageID
+		uid, exists := h.store.GetMessageUser(originalID)
+		if !exists {
+			h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, h.settings.Get("aeror_msg")))
+			return
+		}
+		userID = uid
+	} else {
+		if len(args) < 2 {
+			parseErr = h.settings.Get("unban_usage_msg")
+		} else {
+			id, err := strconv.ParseInt(args[1], 10, 64)
+			if err != nil {
+				parseErr = h.settings.Get("unban_usage_msg")
+			} else {
+				userID = id
+			}
+		}
 	}
 
-	userID, err := strconv.ParseInt(args[1], 10, 64)
-	if err != nil {
-		h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, "Неверный формат ID"))
+	if parseErr != "" {
+		h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, parseErr))
 		return
 	}
 
 	h.store.UnbanUser(userID)
-	h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("✅ Пользователь %d разблокирован", userID)))
+
+	response := h.settings.Get("unban_success_msg")
+	response = strings.ReplaceAll(response, "{user_id}", strconv.FormatInt(userID, 10))
+	h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, response))
 }
 
 func (h *Handler) handleUpdate(message *tgbotapi.Message) {
@@ -424,7 +446,7 @@ func (h *Handler) handleSettings(message *tgbotapi.Message) {
 func (h *Handler) handleCallback(cb *tgbotapi.CallbackQuery) {
 	switch {
 	case cb.Data == "section_messages":
-		h.sendMessagesSettingsMenu(cb.Message.Chat.ID)
+		h.sendCategoriesMenu(cb.Message.Chat.ID)
 		h.bot.Request(tgbotapi.CallbackConfig{CallbackQueryID: cb.ID, ShowAlert: false})
 	case cb.Data == "section_update":
 		h.sendUpdateSection(cb)
@@ -436,6 +458,8 @@ func (h *Handler) handleCallback(cb *tgbotapi.CallbackQuery) {
 		h.handleBackToMainSettings(cb)
 	case cb.Data == "back_to_settings":
 		h.handleBackToSettings(cb)
+	case strings.HasPrefix(cb.Data, "cat_"):
+		h.handleCategoryButton(cb)
 	}
 }
 
@@ -455,14 +479,13 @@ func (h *Handler) sendMainSettingsMenu(chatID int64) {
 	h.bot.Send(msg)
 }
 
-func (h *Handler) sendMessagesSettingsMenu(chatID int64) {
+func (h *Handler) sendCategoriesMenu(chatID int64) {
 	keyboard := tgbotapi.NewInlineKeyboardMarkup()
 	var rows [][]tgbotapi.InlineKeyboardButton
 
-	for _, mk := range settings.AvailableMessages {
-		safeLabel := strings.ReplaceAll(mk.Label, "/", "&#47;")
+	for _, cat := range settings.Categories {
 		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData(safeLabel, "edit_"+mk.Key),
+			tgbotapi.NewInlineKeyboardButtonData(fmt.Sprintf("%s %s", cat.Icon, cat.Name), fmt.Sprintf("cat_%s", cat.Name)),
 		))
 	}
 	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
@@ -470,10 +493,48 @@ func (h *Handler) sendMessagesSettingsMenu(chatID int64) {
 	))
 	keyboard.InlineKeyboard = rows
 
-	msg := tgbotapi.NewMessage(chatID, "💬 <b>Настройки сообщений</b>\n\nВыберите сообщение для редактирования:")
+	msg := tgbotapi.NewMessage(chatID, "💬 <b>Категории сообщений</b>\n\nВыберите категорию:")
 	msg.ParseMode = "HTML"
 	msg.ReplyMarkup = keyboard
 	h.bot.Send(msg)
+}
+
+func (h *Handler) handleCategoryButton(cb *tgbotapi.CallbackQuery) {
+	catName := strings.TrimPrefix(cb.Data, "cat_")
+
+	var cat *settings.SettingsCategory
+	for i := range settings.Categories {
+		if settings.Categories[i].Name == catName {
+			cat = &settings.Categories[i]
+			break
+		}
+	}
+
+	if cat == nil {
+		h.bot.Request(tgbotapi.CallbackConfig{CallbackQueryID: cb.ID, ShowAlert: true, Text: "Категория не найдена"})
+		return
+	}
+
+	keyboard := tgbotapi.NewInlineKeyboardMarkup()
+	var rows [][]tgbotapi.InlineKeyboardButton
+
+	for _, mk := range cat.Messages {
+		safeLabel := strings.ReplaceAll(mk.Label, "/", "&#47;")
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(safeLabel, "edit_"+mk.Key),
+		))
+	}
+	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад к категориям", "section_messages"),
+	))
+	keyboard.InlineKeyboard = rows
+
+	msg := tgbotapi.NewMessage(cb.Message.Chat.ID, fmt.Sprintf("%s <b>%s</b>\n\nВыберите сообщение для редактирования:", cat.Icon, cat.Name))
+	msg.ParseMode = "HTML"
+	msg.ReplyMarkup = keyboard
+	h.bot.Send(msg)
+
+	h.bot.Request(tgbotapi.CallbackConfig{CallbackQueryID: cb.ID, ShowAlert: false})
 }
 
 func (h *Handler) sendUpdateSection(cb *tgbotapi.CallbackQuery) {
@@ -533,6 +594,10 @@ func (h *Handler) handleBackToMainSettings(cb *tgbotapi.CallbackQuery) {
 	delete(h.editingAdmins, cb.Message.Chat.ID)
 	h.mu.Unlock()
 
+	h.bot.Request(tgbotapi.DeleteMessageConfig{
+		ChatID:    cb.Message.Chat.ID,
+		MessageID: cb.Message.MessageID,
+	})
 	h.sendMainSettingsMenu(cb.Message.Chat.ID)
 	h.bot.Request(tgbotapi.CallbackConfig{CallbackQueryID: cb.ID, ShowAlert: false})
 }
@@ -695,7 +760,11 @@ func (h *Handler) handleBackToSettings(cb *tgbotapi.CallbackQuery) {
 	delete(h.editingAdmins, cb.Message.Chat.ID)
 	h.mu.Unlock()
 
-	h.sendMessagesSettingsMenu(cb.Message.Chat.ID)
+	h.bot.Request(tgbotapi.DeleteMessageConfig{
+		ChatID:    cb.Message.Chat.ID,
+		MessageID: cb.Message.MessageID,
+	})
+	h.sendCategoriesMenu(cb.Message.Chat.ID)
 	h.bot.Request(tgbotapi.CallbackConfig{CallbackQueryID: cb.ID, ShowAlert: false})
 }
 
@@ -725,7 +794,7 @@ func (h *Handler) handleSettingsEdit(message *tgbotapi.Message, key string) {
 	msg.ParseMode = "HTML"
 	h.bot.Send(msg)
 
-	h.sendMessagesSettingsMenu(message.Chat.ID)
+	h.sendCategoriesMenu(message.Chat.ID)
 }
 
 func (h *Handler) handleResetSettings(message *tgbotapi.Message) {
@@ -736,7 +805,7 @@ func (h *Handler) handleResetSettings(message *tgbotapi.Message) {
 	count := h.settings.InitDefaults()
 
 	h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("✅ Настройки проверены. Добавлено недостающих ключей: %d", count)))
-	h.sendMessagesSettingsMenu(message.Chat.ID)
+	h.sendCategoriesMenu(message.Chat.ID)
 }
 
 func (h *Handler) handleVersion(message *tgbotapi.Message) {

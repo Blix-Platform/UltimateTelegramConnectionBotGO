@@ -10,30 +10,60 @@ import (
 )
 
 type BotSettings struct {
-	mu  sync.RWMutex
-	db  *sql.DB
+	mu sync.RWMutex
+	db *sql.DB
 }
 
 type MessageKey struct {
-	Key     string
-	Label   string
-	Default string
+	Key      string
+	Label    string
+	Default  string
+	Category string
+}
+
+type SettingsCategory struct {
+	Name     string
+	Icon     string
+	Messages []MessageKey
 }
 
 var AvailableMessages = []MessageKey{
-	{Key: "start_msg", Label: "Начальное сообщение", Default: "Привет! Это бот для отправки предложений. Напишите ваше сообщение, и оно будет доставлено администратору."},
-	{Key: "take_msg", Label: "Сообщение запроса ввода", Default: "Пожалуйста, отправьте текстовое сообщение или медиафайл."},
-	{Key: "gift_msg", Label: "Сообщение об успешной отправке текста", Default: "Ваше сообщение успешно отправлено администратору!"},
-	{Key: "fgift_msg", Label: "Сообщение об успешной отправке файла", Default: "Ваш файл успешно отправлен администратору!"},
-	{Key: "otvet_msg", Label: "Префикс ответа администратора", Default: "Ответ от администратора:"},
-	{Key: "areply_msg", Label: "Сообщение админу об отправке ответа", Default: "Ваш ответ успешно отправлен пользователю!"},
-	{Key: "aeror_msg", Label: "Сообщение об ошибке получателя", Default: "Не удалось определить получателя. Возможно, сообщение устарело."},
-	{Key: "ar_msg", Label: "Подсказка админу про reply", Default: "Пожалуйста, ответьте на сообщение пользователя, чтобы отправить ему ответ."},
-	{Key: "ban_usage_msg", Label: "Инструкция ban", Default: "Использование: /ban <user_id> <часы> [причина]\nИли ответьте на сообщение пользователя: /ban <часы> [причина]"},
-	{Key: "ban_success_msg", Label: "Сообщение о блокировке (без причины)", Default: "Пользователь {user_id} заблокирован на {hours} ч."},
-	{Key: "ban_success_reason_msg", Label: "Сообщение о блокировке (с причиной)", Default: "Пользователь {user_id} заблокирован на {hours} ч. Причина: {reason}"},
-	{Key: "ban_no_reason_msg", Label: "Текст если причина не указана", Default: "Причина не указана."},
-	{Key: "banned_msg", Label: "Сообщение заблокированному пользователю", Default: "Вы заблокированы.\nОсталось времени: {time}\nПричина: {reason}"},
+	// Пользовательские сообщения
+	{Key: "start_msg", Label: "/start — Приветствие", Default: "Привет! Это бот для отправки предложений. Напишите ваше сообщение, и оно будет доставлено администратору.", Category: "user"},
+	{Key: "take_msg", Label: "Запрос ввода", Default: "Пожалуйста, отправьте текстовое сообщение или медиафайл.", Category: "user"},
+	{Key: "gift_msg", Label: "Успешная отправка (текст)", Default: "Ваше сообщение успешно отправлено администратору!", Category: "user"},
+	{Key: "fgift_msg", Label: "Успешная отправка (файл)", Default: "Ваш файл успешно отправлен администратору!", Category: "user"},
+
+	// Админские сообщения
+	{Key: "otvet_msg", Label: "Префикс ответа админа", Default: "Ответ от администратора:", Category: "admin"},
+	{Key: "areply_msg", Label: "Админу об отправке ответа", Default: "Ваш ответ успешно отправлен пользователю!", Category: "admin"},
+	{Key: "aeror_msg", Label: "Ошибка получателя", Default: "Не удалось определить получателя. Возможно, сообщение устарело.", Category: "admin"},
+	{Key: "ar_msg", Label: "Подсказка про reply", Default: "Пожалуйста, ответьте на сообщение пользователя, чтобы отправить ему ответ.", Category: "admin"},
+
+	// Блокировки
+	{Key: "ban_usage_msg", Label: "Инструкция /ban", Default: "Использование: /ban <user_id> <часы> [причина]\nИли ответьте на сообщение пользователя: /ban <часы> [причина]", Category: "ban"},
+	{Key: "ban_success_msg", Label: "Бан (без причины)", Default: "Пользователь {user_id} заблокирован на {hours} ч.", Category: "ban"},
+	{Key: "ban_success_reason_msg", Label: "Бан (с причиной)", Default: "Пользователь {user_id} заблокирован на {hours} ч. Причина: {reason}", Category: "ban"},
+	{Key: "ban_no_reason_msg", Label: "Если причина не указана", Default: "Причина не указана.", Category: "ban"},
+	{Key: "banned_msg", Label: "Сообщение заблокированному", Default: "Вы заблокированы.\nОсталось времени: {time}\nПричина: {reason}", Category: "ban"},
+	{Key: "unban_success_msg", Label: "Успешный /unban", Default: "✅ Пользователь {user_id} разблокирован", Category: "ban"},
+	{Key: "unban_usage_msg", Label: "Инструкция /unban", Default: "Использование: /unban <user_id>\nИли ответьте на сообщение пользователя: /unban", Category: "ban"},
+}
+
+var Categories = []SettingsCategory{
+	{Name: "Админские сообщения", Icon: "🛡️", Messages: filterByCategory("admin")},
+	{Name: "Пользовательские сообщения", Icon: "👤", Messages: filterByCategory("user")},
+	{Name: "Блокировки", Icon: "🚫", Messages: filterByCategory("ban")},
+}
+
+func filterByCategory(cat string) []MessageKey {
+	var result []MessageKey
+	for _, mk := range AvailableMessages {
+		if mk.Category == cat {
+			result = append(result, mk)
+		}
+	}
+	return result
 }
 
 func LoadSettings(dbPath string) *BotSettings {
