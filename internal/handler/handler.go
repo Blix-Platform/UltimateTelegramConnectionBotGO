@@ -86,8 +86,7 @@ func (h *Handler) HandleUpdate(update tgbotapi.Update) {
 }
 
 func (h *Handler) handleStart(message *tgbotapi.Message) {
-	msg := tgbotapi.NewMessage(message.Chat.ID, h.settings.Get("start_msg"))
-	h.bot.Send(msg)
+	h.sendSettingsMessage(message.Chat.ID, "start_msg")
 }
 
 func (h *Handler) handleUserMessage(message *tgbotapi.Message) {
@@ -98,8 +97,7 @@ func (h *Handler) handleUserMessage(message *tgbotapi.Message) {
 	}
 
 	if !isSupportedContent(message) {
-		msg := tgbotapi.NewMessage(message.Chat.ID, h.settings.Get("take_msg"))
-		h.bot.Send(msg)
+		h.sendSettingsMessage(message.Chat.ID, "take_msg")
 		return
 	}
 
@@ -114,12 +112,11 @@ func (h *Handler) handleUserMessage(message *tgbotapi.Message) {
 
 	h.store.SetMessage(sentMsg.MessageID, message.Chat.ID)
 
-	replyText := h.settings.Get("gift_msg")
+	replyKey := "gift_msg"
 	if message.Text == "" {
-		replyText = h.settings.Get("fgift_msg")
+		replyKey = "fgift_msg"
 	}
-
-	h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, replyText))
+	h.sendSettingsMessage(message.Chat.ID, replyKey)
 }
 
 func (h *Handler) handleAdminMessage(message *tgbotapi.Message) {
@@ -144,7 +141,13 @@ func (h *Handler) handleAdminMessage(message *tgbotapi.Message) {
 	switch {
 	case message.Text != "":
 		fullText := fmt.Sprintf("%s\n%s", h.settings.Get("otvet_msg"), message.Text)
-		_, err = h.bot.Send(tgbotapi.NewMessage(userID, fullText))
+		if photoFileID := h.settings.GetPhoto("otvet_msg"); photoFileID != "" {
+			m := tgbotapi.NewPhoto(userID, tgbotapi.FileID(photoFileID))
+			m.Caption = fullText
+			_, err = h.bot.Send(m)
+		} else {
+			_, err = h.bot.Send(tgbotapi.NewMessage(userID, fullText))
+		}
 	case len(message.Photo) > 0:
 		photo := message.Photo[len(message.Photo)-1]
 		m := tgbotapi.NewPhoto(userID, tgbotapi.FilePath(photo.FileID))
@@ -172,7 +175,21 @@ func (h *Handler) handleAdminMessage(message *tgbotapi.Message) {
 		return
 	}
 
-	h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, h.settings.Get("areply_msg")))
+	h.sendSettingsMessage(message.Chat.ID, "areply_msg")
+}
+
+// sendSettingsMessage sends a message with optional photo attachment from settings
+func (h *Handler) sendSettingsMessage(chatID int64, key string) {
+	text := h.settings.Get(key)
+	photoFileID := h.settings.GetPhoto(key)
+
+	if photoFileID != "" {
+		msg := tgbotapi.NewPhoto(chatID, tgbotapi.FileID(photoFileID))
+		msg.Caption = text
+		h.bot.Send(msg)
+	} else if text != "" {
+		h.bot.Send(tgbotapi.NewMessage(chatID, text))
+	}
 }
 
 func (h *Handler) handleBan(message *tgbotapi.Message) {
@@ -801,11 +818,16 @@ func (h *Handler) handleEditButton(cb *tgbotapi.CallbackQuery) {
 		preview = preview[:200] + "..."
 	}
 
+	photoInfo := ""
+	if h.settings.HasPhoto(key) {
+		photoInfo = "\n\n📷 <b>Прикреплённое фото:</b> да"
+	}
+
 	safeLabel := strings.ReplaceAll(label, "/", "&#47;")
 	safePreview := strings.ReplaceAll(preview, "<", "&lt;")
 	safePreview = strings.ReplaceAll(safePreview, ">", "&gt;")
 
-	text := fmt.Sprintf("📝 %s\n\n📌 Текущее значение:\n<code>%s</code>\n\n✏️ Отправьте новое сообщение для изменения:", safeLabel, safePreview)
+	text := fmt.Sprintf("📝 %s\n\n📌 Текущее значение:\n<code>%s</code>%s\n\n✏️ Отправьте новое сообщение для изменения:", safeLabel, safePreview, photoInfo)
 
 	msg := tgbotapi.NewMessage(cb.Message.Chat.ID, text)
 	msg.ParseMode = "HTML"
@@ -835,10 +857,42 @@ func (h *Handler) handleBackToSettings(cb *tgbotapi.CallbackQuery) {
 }
 
 func (h *Handler) handleSettingsEdit(message *tgbotapi.Message, key string) {
-	newValue := message.Text
+	var textValue string
+	var photoValue string
 
-	err := h.settings.Set(key, newValue)
-	if err != nil {
+	// Handle photo if present
+	if len(message.Photo) > 0 {
+		photo := message.Photo[len(message.Photo)-1]
+		photoValue = photo.FileID
+		// Get text from caption or message.Text
+		if message.Caption != "" {
+			textValue = message.Caption
+		} else {
+			textValue = message.Text
+		}
+	} else {
+		textValue = message.Text
+	}
+
+	// Validate text is not empty
+	if textValue == "" {
+		h.mu.Lock()
+		delete(h.editingAdmins, message.Chat.ID)
+		h.mu.Unlock()
+		h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, "❌ Текст не может быть пустым"))
+		return
+	}
+
+	// Save photo if present
+	if photoValue != "" {
+		if err := h.settings.SetPhoto(key, photoValue); err != nil {
+			h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, "❌ Ошибка сохранения фото"))
+			return
+		}
+	}
+
+	// Save text
+	if err := h.settings.Set(key, textValue); err != nil {
 		h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, "❌ Ошибка сохранения"))
 		return
 	}

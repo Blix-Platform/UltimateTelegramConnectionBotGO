@@ -82,6 +82,16 @@ func LoadSettings(dbPath string) *BotSettings {
 		log.Fatalf("Failed to create settings table: %v", err)
 	}
 
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS message_photos (
+			key TEXT PRIMARY KEY,
+			file_id TEXT NOT NULL
+		);
+	`)
+	if err != nil {
+		log.Printf("Warning: could not create message_photos table (may already exist): %v", err)
+	}
+
 	s := &BotSettings{db: db}
 	s.initDefaults()
 	return s
@@ -127,6 +137,43 @@ func (s *BotSettings) Set(key, value string) error {
 
 	_, err := s.db.Exec("INSERT OR REPLACE INTO messages (key, value) VALUES (?, ?)", key, value)
 	return err
+}
+
+func (s *BotSettings) GetPhoto(key string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var fileID string
+	err := s.db.QueryRow("SELECT file_id FROM message_photos WHERE key = ?", key).Scan(&fileID)
+	if err != nil {
+		return ""
+	}
+	return fileID
+}
+
+func (s *BotSettings) SetPhoto(key, fileID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.Exec("INSERT OR REPLACE INTO message_photos (key, file_id) VALUES (?, ?)", key, fileID)
+	return err
+}
+
+func (s *BotSettings) DeletePhoto(key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.Exec("DELETE FROM message_photos WHERE key = ?", key)
+	return err
+}
+
+func (s *BotSettings) HasPhoto(key string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var count int
+	err := s.db.QueryRow("SELECT COUNT(*) FROM message_photos WHERE key = ?", key).Scan(&count)
+	return err == nil && count > 0
 }
 
 func (s *BotSettings) GetAll() map[string]string {
