@@ -12,7 +12,6 @@ NC='\033[0m'
 
 SERVICE_NAME="tgbot"
 INSTALL_DIR="/opt/tgbot"
-REPO_URL="https://github.com/Blix-Platform/UltimateTelegramConnectionBotGO.git"
 
 print_header() {
     echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
@@ -104,7 +103,7 @@ export GOROOT=/usr/local/go
 
 print_info "Установка build-зависимостей для SQLite..."
 apt-get update -qq
-apt-get install -y -qq build-essential gcc libsqlite3-dev git
+apt-get install -y -qq build-essential gcc libsqlite3-dev curl unzip
 print_success "Build-зависимости установлены"
 
 if command -v systemctl &> /dev/null; then
@@ -116,29 +115,25 @@ else
 fi
 
 echo ""
-print_step "ШАГ 2/7: Получение исходного кода"
+print_step "ШАГ 2/7: Загрузка последнего релиза"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TEMP_CLONE=false
+TEMP_DIR=$(mktemp -d)
+trap "rm -rf $TEMP_DIR" EXIT
 
-if [ -d "$SCRIPT_DIR/cmd" ] && [ -d "$SCRIPT_DIR/internal" ]; then
-    print_success "Исходный код найден в текущей директории"
-    SOURCE_DIR="$SCRIPT_DIR"
-else
-    print_info "Исходный код не найден. Клонирование репозитория..."
+LATEST_TAG=$(curl -fsSL https://api.github.com/repos/Blix-Platform/UltimateTelegramConnectionBotGO/releases/latest | grep -oP '"tag_name":\s*"\K[^"]+')
+ZIP_URL=$(curl -fsSL https://api.github.com/repos/Blix-Platform/UltimateTelegramConnectionBotGO/releases/latest | grep -oP '"zipball_url":\s*"\K[^"]+')
 
-    TEMP_DIR=$(mktemp -d)
-    git clone --depth 1 "$REPO_URL" "$TEMP_DIR" 2>/dev/null
-
-    if [ -d "$TEMP_DIR/cmd" ] && [ -d "$TEMP_DIR/internal" ]; then
-        SOURCE_DIR="$TEMP_DIR"
-        TEMP_CLONE=true
-        print_success "Репозиторий клонирован"
-    else
-        print_error "Не удалось клонировать репозиторий"
-        exit 1
-    fi
+if [ -z "$LATEST_TAG" ] || [ -z "$ZIP_URL" ]; then
+    print_error "Не удалось получить информацию о релизе"
+    exit 1
 fi
+
+print_success "Последний релиз: $LATEST_TAG"
+
+echo -e "${YELLOW}ℹ️  Загрузка...${NC}"
+curl -fsSL -L "$ZIP_URL" -o "$TEMP_DIR/release.zip"
+
+print_success "Релиз загружен"
 
 echo ""
 print_step "ШАГ 3/7: Ввод данных бота"
@@ -175,20 +170,29 @@ mkdir -p "$INSTALL_DIR"
 print_success "Директория создана: $INSTALL_DIR"
 
 echo ""
-print_step "ШАГ 5/7: Копирование файлов"
+print_step "ШАГ 5/7: Распаковка файлов"
 
-cp -r "$SOURCE_DIR/cmd" "$INSTALL_DIR/"
-cp -r "$SOURCE_DIR/internal" "$INSTALL_DIR/"
-cp "$SOURCE_DIR/go.mod" "$INSTALL_DIR/"
-cp "$SOURCE_DIR/go.sum" "$INSTALL_DIR/" 2>/dev/null || true
-cp "$SOURCE_DIR/update.sh" "$INSTALL_DIR/"
-chmod +x "$INSTALL_DIR/update.sh"
+unzip -q "$TEMP_DIR/release.zip" -d "$TEMP_DIR/extracted"
 
-print_success "Файлы скопированы"
+SRC_DIR=$(find "$TEMP_DIR/extracted" -mindepth 1 -maxdepth 1 -type d | head -1)
 
-if [ "$TEMP_CLONE" = true ]; then
-    rm -rf "$TEMP_DIR"
+if [ -z "$SRC_DIR" ] || [ ! -d "$SRC_DIR/cmd" ]; then
+    print_error "Не найдены исходные файлы"
+    exit 1
 fi
+
+cp -r "$SRC_DIR/cmd" "$INSTALL_DIR/"
+cp -r "$SRC_DIR/internal" "$INSTALL_DIR/"
+cp "$SRC_DIR/go.mod" "$INSTALL_DIR/"
+cp "$SRC_DIR/go.sum" "$INSTALL_DIR/" 2>/dev/null || true
+cp "$SRC_DIR/update.sh" "$INSTALL_DIR/"
+cp "$SRC_DIR/install.sh" "$INSTALL_DIR/"
+chmod +x "$INSTALL_DIR/update.sh" "$INSTALL_DIR/install.sh"
+
+LATEST_VER=$(echo "$LATEST_TAG" | sed 's/^v//')
+echo "$LATEST_VER" > "$INSTALL_DIR/.version"
+
+print_success "Файлы распакованы"
 
 echo ""
 print_step "ШАГ 6/7: Сборка проекта"
@@ -303,6 +307,7 @@ echo ""
 echo -e "${WHITE}📁 Директория:${NC}       ${CYAN}$INSTALL_DIR${NC}"
 echo -e "${WHITE}⚙️  Конфиг:${NC}          ${CYAN}$INSTALL_DIR/.env${NC}"
 echo -e "${WHITE}🗃  База данных:${NC}      ${CYAN}$INSTALL_DIR/bot.db${NC}"
+echo -e "${WHITE}📦 Версия:${NC}            ${CYAN}v$LATEST_VER${NC}"
 echo ""
 if [ "$HAS_SYSTEMD" = true ]; then
     echo -e "${WHITE}${BOLD}Управление сервисом:${NC}"

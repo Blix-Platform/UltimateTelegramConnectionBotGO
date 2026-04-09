@@ -1,10 +1,14 @@
 package handler
 
 import (
+	"archive/zip"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -12,6 +16,7 @@ import (
 
 	"UltimateTelegramConnectionBotGO/internal/settings"
 	"UltimateTelegramConnectionBotGO/internal/store"
+	"UltimateTelegramConnectionBotGO/internal/version"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -68,6 +73,8 @@ func (h *Handler) HandleUpdate(update tgbotapi.Update) {
 			h.handleUpdate(msg)
 		case "resetsettings":
 			h.handleResetSettings(msg)
+		case "version":
+			h.handleVersion(msg)
 		}
 		return
 	}
@@ -276,29 +283,159 @@ func (h *Handler) handleUpdate(message *tgbotapi.Message) {
 		return
 	}
 
-	h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, "⏳ Обновление...\nБот перезапустится автоматически."))
+	currentVer := version.VersionString()
+	h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("⏳ Проверка обновлений...\nТекущая версия: v%s", currentVer)))
 
-	scriptPath := "/opt/tgbot/update.sh"
-	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
-		h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, "❌ Скрипт обновления не найден.\nУбедитесь что бот установлен через install.sh"))
+	release, err := version.CheckUpdate()
+	if err != nil {
+		h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("❌ %s", err.Error())))
 		return
 	}
 
-	cmd := exec.Command("sudo", "bash", scriptPath)
+	latestVer := strings.TrimPrefix(release.TagName, "v")
+
+	if !version.IsUpdateAvailable(latestVer) {
+		h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("✅ У вас последняя версия: v%s", currentVer)))
+		return
+	}
+
+	h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("📦 Найдено обновление: v%s\nЗагрузка и установка...", latestVer)))
+
+	execPath, _ := os.Executable()
+	installDir := filepath.Dir(execPath)
+
+	tempDir, err := os.MkdirTemp("", "tgbot-update-*")
+	if err != nil {
+		h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("❌ Ошибка создания временной директории: %s", err.Error())))
+		return
+	}
+	defer os.RemoveAll(tempDir)
+
+	zipPath := filepath.Join(tempDir, "release.zip")
+	if err := downloadFile(zipPath, release.ZipballURL); err != nil {
+		h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("❌ Ошибка загрузки: %s", err.Error())))
+		return
+	}
+
+	if err := unzipFile(zipPath, tempDir); err != nil {
+		h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("❌ Ошибка распаковки: %s", err.Error())))
+		return
+	}
+
+	srcDir, err := findSourceDir(tempDir)
+	if err != nil {
+		h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("❌ Не найдены исходные файлы: %s", err.Error())))
+		return
+	}
+
+	for _, name := range []string{"cmd", "internal", "go.mod", "go.sum", "update.sh"} {
+		src := filepath.Join(srcDir, name)
+		dst := filepath.Join(installDir, name)
+		os.RemoveAll(dst)
+		copyPath(src, dst)
+	}
+
+	updateScript := filepath.Join(installDir, "update.sh")
+	os.Chmod(updateScript, 0755)
+
+	h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("✅ Система обновлена!\nv%s → v%s", currentVer, latestVer)))
+
+	cmd := exec.Command("sudo", "bash", filepath.Join(installDir, "update.sh"), "--post-update")
 	cmd.Stdout = nil
 	cmd.Stderr = nil
-	err := cmd.Start()
+	err = cmd.Start()
 	if err != nil {
-		h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("❌ Ошибка запуска обновления: %s", err.Error())))
+		h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("❌ Ошибка запуска скрипта: %s", err.Error())))
 		return
 	}
-
 	cmd.Process.Release()
 
 	go func() {
-		time.Sleep(2 * time.Second)
+		time.Sleep(3 * time.Second)
 		os.Exit(0)
 	}()
+}
+
+func downloadFile(path, url string) error {
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	out, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, resp.Body)
+	return err
+}
+
+func unzipFile(zipPath, destDir string) error {
+	r, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+
+	for _, f := range r.File {
+		fpath := filepath.Join(destDir, f.Name)
+		if !strings.HasPrefix(fpath, filepath.Clean(destDir)+string(os.PathSeparator)) {
+			continue
+		}
+		if f.FileInfo().IsDir() {
+			os.MkdirAll(fpath, os.ModePerm)
+			continue
+		}
+		os.MkdirAll(filepath.Dir(fpath), os.ModePerm)
+		out, err := os.Create(fpath)
+		if err != nil {
+			return err
+		}
+		rc, err := f.Open()
+		if err != nil {
+			out.Close()
+			return err
+		}
+		io.Copy(out, rc)
+		out.Close()
+		rc.Close()
+	}
+	return nil
+}
+
+func findSourceDir(base string) (string, error) {
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		return "", err
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() && (strings.Contains(name, "Blix-Platform") || strings.Contains(name, "pavlyska") || strings.Contains(name, "UltimateTelegram")) {
+			return filepath.Join(base, name), nil
+		}
+	}
+	return base, nil
+}
+
+func copyPath(src, dst string) error {
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		os.MkdirAll(dst, 0755)
+		entries, _ := os.ReadDir(src)
+		for _, e := range entries {
+			copyPath(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name()))
+		}
+	} else {
+		data, _ := os.ReadFile(src)
+		os.WriteFile(dst, data, 0644)
+	}
+	return nil
 }
 
 func (h *Handler) handleSettings(message *tgbotapi.Message) {
@@ -420,6 +557,29 @@ func (h *Handler) handleResetSettings(message *tgbotapi.Message) {
 
 	h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("✅ Настройки проверены. Добавлено недостающих ключей: %d", count)))
 	h.sendSettingsMenu(message.Chat.ID)
+}
+
+func (h *Handler) handleVersion(message *tgbotapi.Message) {
+	if message.Chat.ID != h.adminID {
+		return
+	}
+
+	currentVer := version.VersionString()
+	info := fmt.Sprintf("📦 Текущая версия: <b>v%s</b>", currentVer)
+
+	release, err := version.CheckUpdate()
+	if err == nil {
+		latestVer := strings.TrimPrefix(release.TagName, "v")
+		if version.IsUpdateAvailable(latestVer) {
+			info += fmt.Sprintf("\n🆕 Доступна: <b>v%s</b>\n\nИспользуйте /update для обновления", latestVer)
+		} else {
+			info += "\n✅ У вас последняя версия"
+		}
+	}
+
+	msg := tgbotapi.NewMessage(message.Chat.ID, info)
+	msg.ParseMode = "HTML"
+	h.bot.Send(msg)
 }
 
 func (h *Handler) sendBannedMessage(chatID int64, expiresAt time.Time, reason string) {
