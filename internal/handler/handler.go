@@ -299,7 +299,12 @@ func (h *Handler) handleUpdate(message *tgbotapi.Message) {
 		return
 	}
 
-	h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("📦 Найдено обновление: v%s\nЗагрузка и установка...", latestVer)))
+	updateLabel := latestVer
+	if release.TagName == "main" {
+		updateLabel = "main (последняя)"
+	}
+
+	h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("📦 Найдено обновление: %s\nЗагрузка и установка...", updateLabel)))
 
 	execPath, _ := os.Executable()
 	installDir := filepath.Dir(execPath)
@@ -338,7 +343,7 @@ func (h *Handler) handleUpdate(message *tgbotapi.Message) {
 	updateScript := filepath.Join(installDir, "update.sh")
 	os.Chmod(updateScript, 0755)
 
-	h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("✅ Система обновлена!\nv%s → v%s", currentVer, latestVer)))
+	h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("✅ Система обновлена!\nv%s → %s", currentVer, latestVer)))
 
 	cmd := exec.Command("sudo", "bash", filepath.Join(installDir, "update.sh"), "--post-update")
 	cmd.Stdout = nil
@@ -569,9 +574,12 @@ func (h *Handler) handleVersion(message *tgbotapi.Message) {
 
 	release, err := version.CheckUpdate()
 	if err == nil {
-		latestVer := strings.TrimPrefix(release.TagName, "v")
-		if version.IsUpdateAvailable(latestVer) {
-			info += fmt.Sprintf("\n🆕 Доступна: <b>v%s</b>\n\nИспользуйте /update для обновления", latestVer)
+		latestVer := release.TagName
+		if latestVer != "main" {
+			latestVer = "v" + strings.TrimPrefix(latestVer, "v")
+		}
+		if version.IsUpdateAvailable(release.TagName) {
+			info += fmt.Sprintf("\n🆕 Доступна: <b>%s</b>\n\nИспользуйте /update для обновления", latestVer)
 		} else {
 			info += "\n✅ У вас последняя версия"
 		}

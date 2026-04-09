@@ -71,19 +71,25 @@ if [ "$POST_UPDATE" = false ]; then
     fi
 
     print_info "Проверка последней версии..."
-    if ! command -v jq &> /dev/null; then
-        apt-get update -qq && apt-get install -y -qq jq
+
+    RELEASES=$(curl -fsSL --max-time 10 https://api.github.com/repos/Blix-Platform/UltimateTelegramConnectionBotGO/releases 2>/dev/null || echo "[]")
+    HAS_RELEASES=$(echo "$RELEASES" | grep -c '"tag_name"' || true)
+
+    if [ "$HAS_RELEASES" -gt 0 ]; then
+        LATEST_TAG=$(echo "$RELEASES" | grep -m1 '"tag_name"' | sed 's/.*"tag_name": *"//;s/".*//')
+    else
+        LATEST_TAG=""
     fi
 
-    LATEST_TAG=$(curl -fsSL https://api.github.com/repos/Blix-Platform/UltimateTelegramConnectionBotGO/releases/latest | jq -r '.tag_name')
-
-    if [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" = "null" ]; then
-        print_error "Не удалось получить информацию о релизе"
-        exit 1
+    LATEST_VER=""
+    if [ -n "$LATEST_TAG" ]; then
+        LATEST_VER=$(echo "$LATEST_TAG" | sed 's/^v//')
+        ZIP_URL="https://github.com/Blix-Platform/UltimateTelegramConnectionBotGO/archive/refs/tags/${LATEST_TAG}.zip"
+    else
+        LATEST_TAG="main"
+        LATEST_VER="dev"
+        ZIP_URL="https://github.com/Blix-Platform/UltimateTelegramConnectionBotGO/archive/refs/heads/main.zip"
     fi
-
-    LATEST_VER=$(echo "$LATEST_TAG" | sed 's/^v//')
-    ZIP_URL="https://github.com/Blix-Platform/UltimateTelegramConnectionBotGO/archive/refs/tags/${LATEST_TAG}.zip"
 
     if [ -f "$INSTALL_DIR/.version" ]; then
         CURRENT_VER=$(cat "$INSTALL_DIR/.version")

@@ -42,7 +42,11 @@ func CheckUpdate() (*ReleaseInfo, error) {
 	}
 
 	if len(releases) == 0 {
-		return nil, fmt.Errorf("релизы не найдены")
+		return &ReleaseInfo{
+			TagName:    "main",
+			ZipballURL: fmt.Sprintf("https://github.com/%s/archive/refs/heads/main.zip", Repo),
+			Name:       "Development",
+		}, nil
 	}
 
 	var latest *ReleaseInfo

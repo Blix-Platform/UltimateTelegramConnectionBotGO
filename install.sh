@@ -115,36 +115,40 @@ else
 fi
 
 echo ""
-print_step "ШАГ 2/7: Загрузка последнего релиза"
+print_step "ШАГ 2/7: Загрузка последней версии"
 
 TEMP_DIR=$(mktemp -d)
 trap "rm -rf $TEMP_DIR" EXIT
 
-if ! command -v jq &> /dev/null; then
-    apt-get update -qq
-    apt-get install -y -qq jq
+print_info "Проверка доступных версий..."
+
+LATEST_TAG=""
+RELEASES=$(curl -fsSL --max-time 10 https://api.github.com/repos/Blix-Platform/UltimateTelegramConnectionBotGO/releases 2>/dev/null || echo "[]")
+
+HAS_RELEASES=$(echo "$RELEASES" | grep -c '"tag_name"' || true)
+
+if [ "$HAS_RELEASES" -gt 0 ]; then
+    LATEST_TAG=$(echo "$RELEASES" | grep -m1 '"tag_name"' | sed 's/.*"tag_name": *"//;s/".*//')
 fi
 
-LATEST_TAG=$(curl -fsSL https://api.github.com/repos/Blix-Platform/UltimateTelegramConnectionBotGO/releases/latest | jq -r '.tag_name')
-
-if [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" = "null" ]; then
-    print_error "Не удалось получить информацию о релизе"
-    exit 1
+if [ -n "$LATEST_TAG" ]; then
+    ZIP_URL="https://github.com/Blix-Platform/UltimateTelegramConnectionBotGO/archive/refs/tags/${LATEST_TAG}.zip"
+    print_success "Найден релиз: $LATEST_TAG"
+else
+    LATEST_TAG="main"
+    ZIP_URL="https://github.com/Blix-Platform/UltimateTelegramConnectionBotGO/archive/refs/heads/main.zip"
+    print_info "Релизов не найдено, загружается последняя версия (main)"
 fi
-
-ZIP_URL="https://github.com/Blix-Platform/UltimateTelegramConnectionBotGO/archive/refs/tags/${LATEST_TAG}.zip"
-
-print_success "Последний релиз: $LATEST_TAG"
 
 echo -e "${YELLOW}ℹ️  Загрузка...${NC}"
-curl -fsSL -L "$ZIP_URL" -o "$TEMP_DIR/release.zip"
+curl -fsSL -L --max-time 120 "$ZIP_URL" -o "$TEMP_DIR/release.zip"
 
 if [ ! -f "$TEMP_DIR/release.zip" ] || [ ! -s "$TEMP_DIR/release.zip" ]; then
-    print_error "Не удалось загрузить релиз"
+    print_error "Не удалось загрузить архив"
     exit 1
 fi
 
-print_success "Релиз загружен"
+print_success "Архив загружен"
 
 echo ""
 print_step "ШАГ 3/7: Ввод данных бота"
