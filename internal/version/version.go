@@ -28,8 +28,8 @@ type CommitInfo struct {
 }
 
 type GitHubCommit struct {
-	SHA     string `json:"sha"`
-	Commit  struct {
+	SHA    string `json:"sha"`
+	Commit struct {
 		Message string `json:"message"`
 	} `json:"commit"`
 	Files []struct {
@@ -139,18 +139,48 @@ func CheckUPCommits(currentCommit string) ([]CommitInfo, error) {
 		if c.SHA == currentCommit {
 			break
 		}
-		var filenames []string
-		for _, f := range c.Files {
-			filenames = append(filenames, f.Filename)
+
+		// Fetch commit detail to get file list
+		files, err := getCommitFiles(c.SHA)
+		if err != nil {
+			continue
 		}
+
 		result = append(result, CommitInfo{
 			SHA:       c.SHA,
 			Message:   strings.TrimSpace(strings.TrimPrefix(c.Commit.Message, "[UP]")),
-			Filenames: filenames,
+			Filenames: files,
 		})
 	}
 
 	return result, nil
+}
+
+func getCommitFiles(sha string) ([]string, error) {
+	resp, err := http.Get(fmt.Sprintf("https://api.github.com/repos/%s/commits/%s", Repo, sha))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("статус %d", resp.StatusCode)
+	}
+
+	var detail GitHubCommit
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(body, &detail); err != nil {
+		return nil, err
+	}
+
+	var filenames []string
+	for _, f := range detail.Files {
+		filenames = append(filenames, f.Filename)
+	}
+	return filenames, nil
 }
 
 func GetFileContent(filePath string, ref string) ([]byte, error) {

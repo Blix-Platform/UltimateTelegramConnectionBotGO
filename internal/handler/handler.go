@@ -418,15 +418,238 @@ func (h *Handler) handleSettings(message *tgbotapi.Message) {
 		return
 	}
 
-	h.sendSettingsMenu(message.Chat.ID)
+	h.sendMainSettingsMenu(message.Chat.ID)
 }
 
 func (h *Handler) handleCallback(cb *tgbotapi.CallbackQuery) {
-	if strings.HasPrefix(cb.Data, "edit_") {
+	switch {
+	case cb.Data == "section_messages":
+		h.sendMessagesSettingsMenu(cb.Message.Chat.ID)
+		h.bot.Request(tgbotapi.CallbackConfig{CallbackQueryID: cb.ID, ShowAlert: false})
+	case cb.Data == "section_update":
+		h.sendUpdateSection(cb)
+	case cb.Data == "do_update":
+		h.doUpdateFromSettings(cb)
+	case strings.HasPrefix(cb.Data, "edit_"):
 		h.handleEditButton(cb)
-	} else if cb.Data == "back_to_settings" {
+	case cb.Data == "back_to_main_settings":
+		h.handleBackToMainSettings(cb)
+	case cb.Data == "back_to_settings":
 		h.handleBackToSettings(cb)
 	}
+}
+
+func (h *Handler) sendMainSettingsMenu(chatID int64) {
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("💬 Сообщения", "section_messages"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🔄 Обновить систему", "section_update"),
+		),
+	)
+
+	msg := tgbotapi.NewMessage(chatID, "⚙️ <b>Настройки</b>\n\nВыберите раздел:")
+	msg.ParseMode = "HTML"
+	msg.ReplyMarkup = keyboard
+	h.bot.Send(msg)
+}
+
+func (h *Handler) sendMessagesSettingsMenu(chatID int64) {
+	keyboard := tgbotapi.NewInlineKeyboardMarkup()
+	var rows [][]tgbotapi.InlineKeyboardButton
+
+	for _, mk := range settings.AvailableMessages {
+		safeLabel := strings.ReplaceAll(mk.Label, "/", "&#47;")
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(safeLabel, "edit_"+mk.Key),
+		))
+	}
+	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад в настройки", "back_to_main_settings"),
+	))
+	keyboard.InlineKeyboard = rows
+
+	msg := tgbotapi.NewMessage(chatID, "💬 <b>Настройки сообщений</b>\n\nВыберите сообщение для редактирования:")
+	msg.ParseMode = "HTML"
+	msg.ReplyMarkup = keyboard
+	h.bot.Send(msg)
+}
+
+func (h *Handler) sendUpdateSection(cb *tgbotapi.CallbackQuery) {
+	currentCommit := ""
+	installDir := ""
+	if execPath, err := os.Executable(); err == nil {
+		installDir = filepath.Dir(execPath)
+		if data, err := os.ReadFile(filepath.Join(installDir, ".commit")); err == nil {
+			currentCommit = strings.TrimSpace(string(data))
+		}
+	}
+
+	currentVer := version.VersionString()
+	text := fmt.Sprintf("🔄 <b>Обновление системы</b>\n\n📦 Версия: <b>v%s</b>", currentVer)
+	if currentCommit != "" {
+		text += fmt.Sprintf("\n🔖 Коммит: <code>%s</code>", currentCommit[:7])
+	}
+
+	commits, err := version.CheckUPCommits(currentCommit)
+	if err == nil && len(commits) > 0 {
+		text += fmt.Sprintf("\n🆕 Доступно обновлений: <b>%d</b>", len(commits))
+		text += "\n\nНажмите кнопку ниже для обновления."
+
+		keyboard := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("⬇️ Обновить", "do_update"),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад в настройки", "back_to_main_settings"),
+			),
+		)
+
+		msg := tgbotapi.NewMessage(cb.Message.Chat.ID, text)
+		msg.ParseMode = "HTML"
+		msg.ReplyMarkup = keyboard
+		h.bot.Send(msg)
+	} else {
+		text += "\n✅ У вас последняя версия"
+
+		keyboard := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад в настройки", "back_to_main_settings"),
+			),
+		)
+
+		msg := tgbotapi.NewMessage(cb.Message.Chat.ID, text)
+		msg.ParseMode = "HTML"
+		msg.ReplyMarkup = keyboard
+		h.bot.Send(msg)
+	}
+
+	h.bot.Request(tgbotapi.CallbackConfig{CallbackQueryID: cb.ID, ShowAlert: false})
+}
+
+func (h *Handler) handleBackToMainSettings(cb *tgbotapi.CallbackQuery) {
+	h.mu.Lock()
+	delete(h.editingAdmins, cb.Message.Chat.ID)
+	h.mu.Unlock()
+
+	h.sendMainSettingsMenu(cb.Message.Chat.ID)
+	h.bot.Request(tgbotapi.CallbackConfig{CallbackQueryID: cb.ID, ShowAlert: false})
+}
+
+func (h *Handler) doUpdateFromSettings(cb *tgbotapi.CallbackQuery) {
+	execPath, _ := os.Executable()
+	installDir := filepath.Dir(execPath)
+	commitFile := filepath.Join(installDir, ".commit")
+
+	currentCommit := ""
+	if data, err := os.ReadFile(commitFile); err == nil {
+		currentCommit = strings.TrimSpace(string(data))
+	}
+
+	currentVer := version.VersionString()
+	h.bot.Send(tgbotapi.NewMessage(cb.Message.Chat.ID, fmt.Sprintf("⏳ Проверка обновлений...\nТекущая версия: v%s", currentVer)))
+
+	commits, err := version.CheckUPCommits(currentCommit)
+	if err != nil {
+		h.bot.Send(tgbotapi.NewMessage(cb.Message.Chat.ID, fmt.Sprintf("❌ %s", err.Error())))
+		h.bot.Request(tgbotapi.CallbackConfig{CallbackQueryID: cb.ID, ShowAlert: false})
+		return
+	}
+
+	if len(commits) == 0 {
+		h.bot.Send(tgbotapi.NewMessage(cb.Message.Chat.ID, "✅ У вас последняя версия. Нет доступных обновлений [UP]."))
+		h.bot.Request(tgbotapi.CallbackConfig{CallbackQueryID: cb.ID, ShowAlert: false})
+		return
+	}
+
+	var summary strings.Builder
+	summary.WriteString(fmt.Sprintf("📦 Найдено обновлений [UP]: %d\n\n", len(commits)))
+	for i, c := range commits {
+		msg := c.Message
+		if len(msg) > 80 {
+			msg = msg[:80] + "..."
+		}
+		summary.WriteString(fmt.Sprintf("%d. %s\n   Файлов: %d\n", i+1, msg, len(c.Filenames)))
+	}
+	summary.WriteString("\n⬇️ Загрузка изменённых файлов...")
+
+	h.bot.Send(tgbotapi.NewMessage(cb.Message.Chat.ID, summary.String()))
+
+	totalUpdated := 0
+	totalSkipped := 0
+	totalErrors := 0
+
+	for _, commit := range commits {
+		h.bot.Send(tgbotapi.NewMessage(cb.Message.Chat.ID, fmt.Sprintf("🔄 Применяю: %s", commit.Message)))
+
+		for _, fname := range commit.Filenames {
+			if !isUpdateableFile(fname) {
+				totalSkipped++
+				continue
+			}
+
+			content, err := version.GetFileContent(fname, commit.SHA)
+			if err != nil {
+				h.bot.Send(tgbotapi.NewMessage(cb.Message.Chat.ID, fmt.Sprintf("⚠️ Пропуск %s: %s", fname, err.Error())))
+				totalErrors++
+				continue
+			}
+
+			localPath := filepath.Join(installDir, fname)
+			skip := false
+			if existing, err := os.ReadFile(localPath); err == nil {
+				if version.FileMD5(existing) == version.FileMD5(content) {
+					skip = true
+				}
+			}
+
+			if skip {
+				totalSkipped++
+				continue
+			}
+
+			os.MkdirAll(filepath.Dir(localPath), 0755)
+			if err := os.WriteFile(localPath, content, 0644); err != nil {
+				h.bot.Send(tgbotapi.NewMessage(cb.Message.Chat.ID, fmt.Sprintf("❌ Ошибка записи %s: %s", fname, err.Error())))
+				totalErrors++
+				continue
+			}
+
+			totalUpdated++
+		}
+	}
+
+	os.WriteFile(commitFile, []byte(commits[0].SHA), 0644)
+
+	resultMsg := fmt.Sprintf("✅ Обновление применено!\n\n"+
+		"📝 Обновлено файлов: %d\n"+
+		"⏭️ Пропущено (без изменений): %d\n"+
+		"❌ Ошибок: %d\n\n"+
+		"Текущий коммит: %s", totalUpdated, totalSkipped, totalErrors, commits[0].SHA[:7])
+
+	h.bot.Send(tgbotapi.NewMessage(cb.Message.Chat.ID, resultMsg))
+
+	updateScript := filepath.Join(installDir, "update.sh")
+	os.Chmod(updateScript, 0755)
+
+	cmd := exec.Command("sudo", "bash", updateScript, "--post-update")
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	err = cmd.Start()
+	if err != nil {
+		h.bot.Send(tgbotapi.NewMessage(cb.Message.Chat.ID, fmt.Sprintf("❌ Ошибка запуска скрипта: %s", err.Error())))
+		h.bot.Request(tgbotapi.CallbackConfig{CallbackQueryID: cb.ID, ShowAlert: false})
+		return
+	}
+	cmd.Process.Release()
+
+	h.bot.Request(tgbotapi.CallbackConfig{CallbackQueryID: cb.ID, ShowAlert: false})
+
+	go func() {
+		time.Sleep(3 * time.Second)
+		os.Exit(0)
+	}()
 }
 
 func (h *Handler) handleEditButton(cb *tgbotapi.CallbackQuery) {
@@ -472,26 +695,8 @@ func (h *Handler) handleBackToSettings(cb *tgbotapi.CallbackQuery) {
 	delete(h.editingAdmins, cb.Message.Chat.ID)
 	h.mu.Unlock()
 
-	h.sendSettingsMenu(cb.Message.Chat.ID)
+	h.sendMessagesSettingsMenu(cb.Message.Chat.ID)
 	h.bot.Request(tgbotapi.CallbackConfig{CallbackQueryID: cb.ID, ShowAlert: false})
-}
-
-func (h *Handler) sendSettingsMenu(chatID int64) {
-	keyboard := tgbotapi.NewInlineKeyboardMarkup()
-	var rows [][]tgbotapi.InlineKeyboardButton
-
-	for _, mk := range settings.AvailableMessages {
-		safeLabel := strings.ReplaceAll(mk.Label, "/", "&#47;")
-		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData(safeLabel, "edit_"+mk.Key),
-		))
-	}
-	keyboard.InlineKeyboard = rows
-
-	msg := tgbotapi.NewMessage(chatID, "⚙️ <b>Настройки сообщений</b>\n\nВыберите сообщение для редактирования:")
-	msg.ParseMode = "HTML"
-	msg.ReplyMarkup = keyboard
-	h.bot.Send(msg)
 }
 
 func (h *Handler) handleSettingsEdit(message *tgbotapi.Message, key string) {
@@ -520,7 +725,7 @@ func (h *Handler) handleSettingsEdit(message *tgbotapi.Message, key string) {
 	msg.ParseMode = "HTML"
 	h.bot.Send(msg)
 
-	h.sendSettingsMenu(message.Chat.ID)
+	h.sendMessagesSettingsMenu(message.Chat.ID)
 }
 
 func (h *Handler) handleResetSettings(message *tgbotapi.Message) {
@@ -531,7 +736,7 @@ func (h *Handler) handleResetSettings(message *tgbotapi.Message) {
 	count := h.settings.InitDefaults()
 
 	h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("✅ Настройки проверены. Добавлено недостающих ключей: %d", count)))
-	h.sendSettingsMenu(message.Chat.ID)
+	h.sendMessagesSettingsMenu(message.Chat.ID)
 }
 
 func (h *Handler) handleVersion(message *tgbotapi.Message) {
