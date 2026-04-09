@@ -27,6 +27,9 @@ type Handler struct {
 	mu              sync.Mutex
 	editingAdmins   map[int64]string
 	currentCategory map[int64]string
+	linkStep        map[int64]string // "label" or "url" for multi-step link input
+	linkKey         map[int64]string // which key is being edited for link
+	linkData        map[int64]string // stores the label while asking for URL
 }
 
 func New(bot *tgbotapi.BotAPI, s *store.Store, st *settings.BotSettings, adminID int64) *Handler {
@@ -34,6 +37,9 @@ func New(bot *tgbotapi.BotAPI, s *store.Store, st *settings.BotSettings, adminID
 		bot: bot, store: s, settings: st, adminID: adminID,
 		editingAdmins:   make(map[int64]string),
 		currentCategory: make(map[int64]string),
+		linkStep:        make(map[int64]string),
+		linkKey:         make(map[int64]string),
+		linkData:        make(map[int64]string),
 	}
 }
 
@@ -48,6 +54,17 @@ func (h *Handler) HandleUpdate(update tgbotapi.Update) {
 	msg := update.Message
 
 	if msg.Chat.ID == h.adminID {
+		h.mu.Lock()
+		linkStepVal := h.linkStep[msg.Chat.ID]
+		linkKeyVal := h.linkKey[msg.Chat.ID]
+		h.mu.Unlock()
+
+		// Handle link creation steps
+		if linkStepVal != "" && !msg.IsCommand() {
+			h.handleLinkStep(msg, linkStepVal, linkKeyVal)
+			return
+		}
+
 		h.mu.Lock()
 		editingKey, isEditing := h.editingAdmins[msg.Chat.ID]
 		h.mu.Unlock()
@@ -74,6 +91,8 @@ func (h *Handler) HandleUpdate(update tgbotapi.Update) {
 			h.handleResetSettings(msg)
 		case "version":
 			h.handleVersion(msg)
+		case "cancel":
+			h.handleCancelCommand(msg)
 		}
 		return
 	}
@@ -189,15 +208,31 @@ func (h *Handler) handleAdminMessage(message *tgbotapi.Message) {
 func (h *Handler) sendSettingsMessage(chatID int64, key string) {
 	text := h.settings.Get(key)
 	photoFileID := h.settings.GetPhoto(key)
+	btnLabel, btnURL, hasButton := h.settings.GetButton(key)
+
+	var keyboard *tgbotapi.InlineKeyboardMarkup
+	if hasButton {
+		keyboard = &tgbotapi.InlineKeyboardMarkup{
+			InlineKeyboard: [][]tgbotapi.InlineKeyboardButton{
+				{tgbotapi.NewInlineKeyboardButtonURL(btnLabel, btnURL)},
+			},
+		}
+	}
 
 	if photoFileID != "" {
 		msg := tgbotapi.NewPhoto(chatID, tgbotapi.FileID(photoFileID))
 		msg.Caption = text
 		msg.ParseMode = "HTML"
+		if keyboard != nil {
+			msg.ReplyMarkup = *keyboard
+		}
 		h.bot.Send(msg)
 	} else if text != "" {
 		msg := tgbotapi.NewMessage(chatID, text)
 		msg.ParseMode = "HTML"
+		if keyboard != nil {
+			msg.ReplyMarkup = *keyboard
+		}
 		h.bot.Send(msg)
 	}
 }
@@ -491,6 +526,14 @@ func (h *Handler) handleCallback(cb *tgbotapi.CallbackQuery) {
 		h.handleCategoryButton(cb)
 	case cb.Data == "back_to_categories":
 		h.handleBackToCategories(cb)
+	case cb.Data == "delete_photo":
+		h.handleDeletePhoto(cb)
+	case cb.Data == "add_link":
+		h.handleAddLink(cb)
+	case cb.Data == "delete_button":
+		h.handleDeleteButton(cb)
+	case cb.Data == "link_cancel":
+		h.handleLinkCancel(cb)
 	}
 }
 
@@ -833,18 +876,52 @@ func (h *Handler) handleEditButton(cb *tgbotapi.CallbackQuery) {
 		photoInfo = "\n\n📷 <b>Прикреплённое фото:</b> да"
 	}
 
+	btnLabel, btnURL, hasButton := h.settings.GetButton(key)
+	btnInfo := ""
+	if hasButton {
+		btnInfo = fmt.Sprintf("\n🔗 <b>Кнопка:</b> %s → %s", btnLabel, btnURL)
+	}
+
 	safeLabel := strings.ReplaceAll(label, "/", "&#47;")
 	safePreview := strings.ReplaceAll(preview, "<", "&lt;")
 	safePreview = strings.ReplaceAll(safePreview, ">", "&gt;")
 
 	text := fmt.Sprintf(
-		"📝 %s\n\n📌 Текущее значение:\n<code>%s</code>%s\n\n✏️ Отправьте сообщение для изменения:\n\n💡 Выделите текст и выберите форматирование в меню Telegram:\n"+
-			"<b>жирный</b> | <i>курсив</i> | <u>подчёркнутый</u> | <s>зачёркнутый</s> | <code>код</code> | ссылка",
-		safeLabel, safePreview, photoInfo,
+		"📝 %s\n\n📌 Текущее значение:\n<code>%s</code>%s%s\n\n✏️ Отправьте сообщение для изменения:",
+		safeLabel, safePreview, photoInfo, btnInfo,
 	)
+
+	// Build inline keyboard with action buttons
+	keyboard := tgbotapi.NewInlineKeyboardMarkup()
+	var actionRows [][]tgbotapi.InlineKeyboardButton
+
+	// Photo actions
+	if h.settings.HasPhoto(key) {
+		actionRows = append(actionRows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🗑 Удалить фото", "delete_photo"),
+		))
+	}
+
+	// Link button management
+	if hasButton {
+		actionRows = append(actionRows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🔘 Удалить кнопку", "delete_button"),
+		))
+	} else {
+		actionRows = append(actionRows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("➕ Добавить кнопку-ссылку", "add_link"),
+		))
+	}
+
+	// Cancel button
+	actionRows = append(actionRows, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData("❌ Отмена", "link_cancel"),
+	))
+	keyboard.InlineKeyboard = actionRows
 
 	msg := tgbotapi.NewMessage(cb.Message.Chat.ID, text)
 	msg.ParseMode = "HTML"
+	msg.ReplyMarkup = keyboard
 	h.bot.Send(msg)
 
 	h.mu.Lock()
@@ -868,6 +945,191 @@ func (h *Handler) handleBackToSettings(cb *tgbotapi.CallbackQuery) {
 	})
 	h.sendCategoriesMenu(cb.Message.Chat.ID)
 	h.bot.Request(tgbotapi.CallbackConfig{CallbackQueryID: cb.ID, ShowAlert: false})
+}
+
+func (h *Handler) handleDeletePhoto(cb *tgbotapi.CallbackQuery) {
+	h.mu.Lock()
+	key := h.editingAdmins[cb.Message.Chat.ID]
+	h.mu.Unlock()
+
+	if key == "" {
+		h.bot.Request(tgbotapi.CallbackConfig{CallbackQueryID: cb.ID, ShowAlert: true, Text: "Нет активного редактирования"})
+		return
+	}
+
+	if err := h.settings.DeletePhoto(key); err != nil {
+		h.bot.Request(tgbotapi.CallbackConfig{CallbackQueryID: cb.ID, ShowAlert: true, Text: "Ошибка удаления фото"})
+		return
+	}
+
+	// Delete the message and show editor again
+	h.bot.Request(tgbotapi.DeleteMessageConfig{
+		ChatID:    cb.Message.Chat.ID,
+		MessageID: cb.Message.MessageID,
+	})
+
+	// Re-send the edit view
+	fakeCB := &tgbotapi.CallbackQuery{
+		Message: cb.Message,
+		Data:    "edit_" + key,
+		ID:      cb.ID,
+	}
+	h.handleEditButton(fakeCB)
+}
+
+func (h *Handler) handleAddLink(cb *tgbotapi.CallbackQuery) {
+	h.mu.Lock()
+	key := h.editingAdmins[cb.Message.Chat.ID]
+	h.mu.Unlock()
+
+	if key == "" {
+		h.bot.Request(tgbotapi.CallbackConfig{CallbackQueryID: cb.ID, ShowAlert: true, Text: "Нет активного редактирования"})
+		return
+	}
+
+	h.mu.Lock()
+	h.linkStep[cb.Message.Chat.ID] = "label"
+	h.linkKey[cb.Message.Chat.ID] = key
+	h.mu.Unlock()
+
+	h.bot.Request(tgbotapi.DeleteMessageConfig{
+		ChatID:    cb.Message.Chat.ID,
+		MessageID: cb.Message.MessageID,
+	})
+
+	msg := tgbotapi.NewMessage(cb.Message.Chat.ID, "🔗 Введите название кнопки:\n\nДля отмены нажмите /cancel")
+	h.bot.Send(msg)
+}
+
+func (h *Handler) handleDeleteButton(cb *tgbotapi.CallbackQuery) {
+	h.mu.Lock()
+	key := h.editingAdmins[cb.Message.Chat.ID]
+	h.mu.Unlock()
+
+	if key == "" {
+		h.bot.Request(tgbotapi.CallbackConfig{CallbackQueryID: cb.ID, ShowAlert: true, Text: "Нет активного редактирования"})
+		return
+	}
+
+	if err := h.settings.DeleteButton(key); err != nil {
+		h.bot.Request(tgbotapi.CallbackConfig{CallbackQueryID: cb.ID, ShowAlert: true, Text: "Ошибка удаления кнопки"})
+		return
+	}
+
+	h.bot.Request(tgbotapi.DeleteMessageConfig{
+		ChatID:    cb.Message.Chat.ID,
+		MessageID: cb.Message.MessageID,
+	})
+
+	fakeCB := &tgbotapi.CallbackQuery{
+		Message: cb.Message,
+		Data:    "edit_" + key,
+		ID:      cb.ID,
+	}
+	h.handleEditButton(fakeCB)
+}
+
+func (h *Handler) handleLinkCancel(cb *tgbotapi.CallbackQuery) {
+	h.mu.Lock()
+	delete(h.linkStep, cb.Message.Chat.ID)
+	delete(h.linkKey, cb.Message.Chat.ID)
+	delete(h.linkData, cb.Message.Chat.ID)
+	h.mu.Unlock()
+
+	h.bot.Request(tgbotapi.DeleteMessageConfig{
+		ChatID:    cb.Message.Chat.ID,
+		MessageID: cb.Message.MessageID,
+	})
+
+	h.mu.Lock()
+	key := h.editingAdmins[cb.Message.Chat.ID]
+	h.mu.Unlock()
+
+	if key != "" {
+		fakeCB := &tgbotapi.CallbackQuery{
+			Message: cb.Message,
+			Data:    "edit_" + key,
+			ID:      cb.ID,
+		}
+		h.handleEditButton(fakeCB)
+	}
+}
+
+func (h *Handler) handleCancelCommand(message *tgbotapi.Message) {
+	if message.Chat.ID != h.adminID {
+		return
+	}
+
+	h.mu.Lock()
+	_, isLink := h.linkStep[message.Chat.ID]
+	_, isEditing := h.editingAdmins[message.Chat.ID]
+	h.mu.Unlock()
+
+	if !isLink && !isEditing {
+		return
+	}
+
+	h.mu.Lock()
+	delete(h.linkStep, message.Chat.ID)
+	delete(h.linkKey, message.Chat.ID)
+	delete(h.linkData, message.Chat.ID)
+	delete(h.editingAdmins, message.Chat.ID)
+	h.mu.Unlock()
+
+	h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, "❌ Отменено"))
+	h.sendCategoriesMenu(message.Chat.ID)
+}
+
+func (h *Handler) handleLinkStep(message *tgbotapi.Message, step, key string) {
+	if step == "label" {
+		if message.Text == "" {
+			h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, "❌ Название не может быть пустым. Введите текст:"))
+			return
+		}
+
+		h.mu.Lock()
+		h.linkData[message.Chat.ID] = message.Text
+		h.linkStep[message.Chat.ID] = "url"
+		h.mu.Unlock()
+
+		h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, "🔗 Теперь введите URL для кнопки:\n\nПример: https://example.com"))
+		return
+	}
+
+	if step == "url" {
+		url := message.Text
+		if url == "" {
+			h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, "❌ URL не может быть пустым. Введите ссылку:"))
+			return
+		}
+
+		label := h.linkData[message.Chat.ID]
+		if err := h.settings.SetButton(key, label, url); err != nil {
+			h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, "❌ Ошибка сохранения кнопки"))
+			return
+		}
+
+		h.mu.Lock()
+		delete(h.linkStep, message.Chat.ID)
+		delete(h.linkKey, message.Chat.ID)
+		delete(h.linkData, message.Chat.ID)
+		h.mu.Unlock()
+
+		h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("✅ Кнопка «%s» добавлена!", label)))
+
+		// Return to editor
+		fakeCB := &tgbotapi.CallbackQuery{
+			Message: &tgbotapi.Message{Chat: &tgbotapi.Chat{ID: message.Chat.ID}},
+			Data:    "edit_" + key,
+			ID:      "",
+		}
+		h.bot.Request(tgbotapi.DeleteMessageConfig{
+			ChatID:    message.Chat.ID,
+			MessageID: message.MessageID - 1,
+		})
+		h.handleEditButton(fakeCB)
+		return
+	}
 }
 
 func (h *Handler) handleSettingsEdit(message *tgbotapi.Message, key string) {

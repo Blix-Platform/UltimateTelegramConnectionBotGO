@@ -92,6 +92,17 @@ func LoadSettings(dbPath string) *BotSettings {
 		log.Printf("Warning: could not create message_photos table (may already exist): %v", err)
 	}
 
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS message_buttons (
+			key TEXT PRIMARY KEY,
+			label TEXT NOT NULL,
+			url TEXT NOT NULL
+		);
+	`)
+	if err != nil {
+		log.Printf("Warning: could not create message_buttons table (may already exist): %v", err)
+	}
+
 	s := &BotSettings{db: db}
 	s.initDefaults()
 	return s
@@ -174,6 +185,33 @@ func (s *BotSettings) HasPhoto(key string) bool {
 	var count int
 	err := s.db.QueryRow("SELECT COUNT(*) FROM message_photos WHERE key = ?", key).Scan(&count)
 	return err == nil && count > 0
+}
+
+func (s *BotSettings) SetButton(key, label, url string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.Exec("INSERT OR REPLACE INTO message_buttons (key, label, url) VALUES (?, ?, ?)", key, label, url)
+	return err
+}
+
+func (s *BotSettings) GetButton(key string) (label, url string, exists bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	err := s.db.QueryRow("SELECT label, url FROM message_buttons WHERE key = ?", key).Scan(&label, &url)
+	if err != nil {
+		return "", "", false
+	}
+	return label, url, true
+}
+
+func (s *BotSettings) DeleteButton(key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.Exec("DELETE FROM message_buttons WHERE key = ?", key)
+	return err
 }
 
 func (s *BotSettings) GetAll() map[string]string {
