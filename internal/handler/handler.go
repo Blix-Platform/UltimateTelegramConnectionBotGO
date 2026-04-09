@@ -27,9 +27,9 @@ type Handler struct {
 	mu              sync.Mutex
 	editingAdmins   map[int64]string
 	currentCategory map[int64]string
-	linkStep        map[int64]string 
-	linkKey         map[int64]string 
-	linkData        map[int64]string 
+	linkStep        map[int64]string
+	linkKey         map[int64]string
+	linkData        map[int64]string
 }
 
 func New(bot *tgbotapi.BotAPI, s *store.Store, st *settings.BotSettings, adminID int64) *Handler {
@@ -1260,98 +1260,173 @@ func isSupportedContent(message *tgbotapi.Message) bool {
 
 // messageEntitiesToHTML converts Telegram message text and entities to HTML.
 // Handles: bold, italic, underline, strikethrough, code, pre, text_link, text_mention.
+// Supports overlapping/nested entities (e.g., bold + italic + link on the same word).
 func messageEntitiesToHTML(text string, entities []tgbotapi.MessageEntity) string {
 	if len(entities) == 0 {
 		return escapeHTML(text)
 	}
 
-	type boundary struct {
-		Offset int
-		Tags   []string
-	}
-	var boundaries []boundary
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Error converting entities to HTML: %v, falling back to plain text", r)
+		}
+	}()
+
 	runes := []rune(text)
+	n := len(runes)
 
-	// Track consumed ranges for text_link and text_mention (to avoid double-writing)
-	var consumedRanges [][2]int
+	supportedTypes := map[string]string{
+		"bold":          "b",
+		"italic":        "i",
+		"underline":     "u",
+		"strikethrough": "s",
+		"code":          "code",
+		"pre":           "pre",
+	}
 
+	type linkInfo struct {
+		Start     int
+		End       int
+		URL       string // empty for text_mention
+		UserID    int64
+		IsMention bool
+	}
+
+	var links []linkInfo
+	var fmtStartClose [][3]int // {start, end, type_idx}
+
+	linkTypeIdx := -1
 	for _, e := range entities {
 		start := e.Offset
 		end := e.Offset + e.Length
+		if start < 0 || end > n || start >= end {
+			continue
+		}
 
 		switch e.Type {
 		case "text_link":
-			linkText := escapeHTML(string(runes[start:end]))
-			url := strings.ReplaceAll(e.URL, "&", "&amp;")
-			url = strings.ReplaceAll(url, "\"", "&quot;")
-			boundaries = append(boundaries, boundary{start, []string{fmt.Sprintf("<a href=\"%s\">%s</a>", url, linkText)}})
-			consumedRanges = append(consumedRanges, [2]int{start, end})
+			linkTypeIdx = len(links)
+			links = append(links, linkInfo{start, end, e.URL, 0, false})
 		case "text_mention":
-			boundaries = append(boundaries, boundary{start, []string{fmt.Sprintf("<a href=\"tg://user?id=%d\">%s</a>", e.User.ID, escapeHTML(string(runes[start:end])))}})
-			consumedRanges = append(consumedRanges, [2]int{start, end})
-		case "bold":
-			boundaries = append(boundaries, boundary{start, []string{"<b>"}})
-			boundaries = append(boundaries, boundary{end, []string{"</b>"}})
-		case "italic":
-			boundaries = append(boundaries, boundary{start, []string{"<i>"}})
-			boundaries = append(boundaries, boundary{end, []string{"</i>"}})
-		case "underline":
-			boundaries = append(boundaries, boundary{start, []string{"<u>"}})
-			boundaries = append(boundaries, boundary{end, []string{"</u>"}})
-		case "strikethrough":
-			boundaries = append(boundaries, boundary{start, []string{"<s>"}})
-			boundaries = append(boundaries, boundary{end, []string{"</s>"}})
-		case "code":
-			boundaries = append(boundaries, boundary{start, []string{"<code>"}})
-			boundaries = append(boundaries, boundary{end, []string{"</code>"}})
-		case "pre":
-			boundaries = append(boundaries, boundary{start, []string{"<pre>"}})
-			boundaries = append(boundaries, boundary{end, []string{"</pre>"}})
-		}
-	}
-
-	// Sort by offset
-	for i := 0; i < len(boundaries); i++ {
-		for j := i + 1; j < len(boundaries); j++ {
-			if boundaries[i].Offset > boundaries[j].Offset {
-				boundaries[i], boundaries[j] = boundaries[j], boundaries[i]
+			linkTypeIdx = len(links)
+			links = append(links, linkInfo{start, end, "", e.User.ID, true})
+		default:
+			if _, ok := supportedTypes[e.Type]; ok {
+				fmtStartClose = append(fmtStartClose, [3]int{start, end, linkTypeIdx})
 			}
 		}
 	}
 
-	isConsumed := func(pos int) bool {
-		for _, r := range consumedRanges {
-			if pos >= r[0] && pos < r[1] {
-				return true
-			}
-		}
-		return false
+	if len(links) == 0 && len(fmtStartClose) == 0 {
+		return escapeHTML(text)
 	}
 
 	var result strings.Builder
-	prev := 0
-	for _, b := range boundaries {
-		if b.Offset < prev {
-			continue
-		}
-		if b.Offset > len(runes) {
-			b.Offset = len(runes)
-		}
-		// Write text from prev to b.Offset, skipping consumed ranges
-		for i := prev; i < b.Offset; i++ {
-			if !isConsumed(i) {
-				result.WriteString(escapeHTML(string(runes[i])))
+
+	for i := 0; i < n; i++ {
+		// Check if this is a link start
+		linkIdx := -1
+		for li, lnk := range links {
+			if lnk.Start == i {
+				linkIdx = li
+				break
 			}
 		}
-		for _, tag := range b.Tags {
-			result.WriteString(tag)
+
+		if linkIdx >= 0 {
+			lnk := links[linkIdx]
+			// Collect formatting tags that exactly match this link range
+			var tags []string
+			for _, fc := range fmtStartClose {
+				if fc[0] == lnk.Start && fc[1] == lnk.End {
+					for _, e2 := range entities {
+						if e2.Offset == fc[0] && e2.Offset+e2.Length == fc[1] {
+							if name, ok := supportedTypes[e2.Type]; ok {
+								tags = append(tags, name)
+							}
+							break
+						}
+					}
+				}
+			}
+
+			linkText := escapeHTML(string(runes[lnk.Start:lnk.End]))
+
+			if lnk.IsMention {
+				result.WriteString(fmt.Sprintf("<a href=\"tg://user?id=%d\">", lnk.UserID))
+			} else {
+				url := strings.ReplaceAll(lnk.URL, "&", "&amp;")
+				url = strings.ReplaceAll(url, "\"", "&quot;")
+				result.WriteString(fmt.Sprintf("<a href=\"%s\">", url))
+			}
+			for _, t := range tags {
+				result.WriteString(fmt.Sprintf("<%s>", t))
+			}
+			result.WriteString(linkText)
+			for j := len(tags) - 1; j >= 0; j-- {
+				result.WriteString(fmt.Sprintf("</%s>", tags[j]))
+			}
+			result.WriteString("</a>")
+
+			i = lnk.End - 1
+			continue
 		}
-		prev = b.Offset
+
+		// Skip if inside a link range
+		inLink := false
+		for _, lnk := range links {
+			if i > lnk.Start && i < lnk.End {
+				inLink = true
+				break
+			}
+		}
+		if inLink {
+			continue
+		}
+
+		// Open formatting tags that start here
+		for _, fc := range fmtStartClose {
+			if fc[0] == i && fc[2] < 0 {
+				for _, e2 := range entities {
+					if e2.Offset == fc[0] && e2.Offset+e2.Length == fc[1] {
+						if name, ok := supportedTypes[e2.Type]; ok {
+							result.WriteString(fmt.Sprintf("<%s>", name))
+						}
+						break
+					}
+				}
+			}
+		}
+
+		result.WriteString(escapeHTML(string(runes[i])))
+
+		// Close tags that end at next position
+		nextPos := i + 1
+		for _, fc := range fmtStartClose {
+			if fc[1] == nextPos && fc[2] < 0 {
+				for _, e2 := range entities {
+					if e2.Offset == fc[0] && e2.Offset+e2.Length == fc[1] {
+						if name, ok := supportedTypes[e2.Type]; ok {
+							result.WriteString(fmt.Sprintf("</%s>", name))
+						}
+						break
+					}
+				}
+			}
+		}
 	}
-	// Write remaining text, skipping consumed ranges
-	for i := prev; i < len(runes); i++ {
-		if !isConsumed(i) {
-			result.WriteString(escapeHTML(string(runes[i])))
+
+	// Close remaining tags
+	for _, fc := range fmtStartClose {
+		if fc[1] == n && fc[2] < 0 {
+			for _, e2 := range entities {
+				if e2.Offset == fc[0] && e2.Offset+e2.Length == fc[1] {
+					if name, ok := supportedTypes[e2.Type]; ok {
+						result.WriteString(fmt.Sprintf("</%s>", name))
+					}
+					break
+				}
+			}
 		}
 	}
 
