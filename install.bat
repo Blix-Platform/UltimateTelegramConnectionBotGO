@@ -13,6 +13,8 @@ echo ║                                                          ║
 echo ╚══════════════════════════════════════════════════════════╝
 echo.
 
+set "REPO=Blix-Platform/UltimateTelegramConnectionBotGO"
+
 :: ── Check Go ──
 echo ┌──────────────────────────────────────────────────────────┐
 echo │  ШАГ 1/5: Проверка Go
@@ -35,9 +37,76 @@ for /f "tokens=*" %%i in ('go version') do set GO_VERSION=%%i
 echo [+] Go найден: %GO_VERSION%
 echo.
 
+:: ── Get latest commit ──
+echo ┌──────────────────────────────────────────────────────────┐
+echo │  ШАГ 2/5: Загрузка файлов проекта
+echo └──────────────────────────────────────────────────────────┘
+echo.
+
+echo [+] Получение последнего коммита...
+
+set "COMMITS_FILE=%TEMP%\tgbot_commits.json"
+curl -fsSL --max-time 15 "https://api.github.com/repos/%REPO%/commits?per_page=10" -o "%COMMITS_FILE%" 2>nul
+
+set "TARGET_COMMIT="
+set "TARGET_VER=dev"
+
+if exist "%COMMITS_FILE%" (
+    :: Try to find first [UP] commit
+    for /f "tokens=*" %%A in ('powershell -Command "$c=Get-Content '%COMMITS_FILE%' -Raw | ConvertFrom-Json; foreach($x in $c){ $m=$x.commit.message; if($m -match '^\[UP\]'){Write-Host $x.sha; break}}"') do (
+        if not defined TARGET_COMMIT set "TARGET_COMMIT=%%A"
+    )
+
+    if not defined TARGET_COMMIT (
+        for /f "tokens=*" %%A in ('powershell -Command "$c=Get-Content '%COMMITS_FILE%' -Raw | ConvertFrom-Json; Write-Host $c[0].sha"') do (
+            set "TARGET_COMMIT=%%A"
+        )
+    )
+)
+
+del "%COMMITS_FILE%" 2>nul
+
+if not defined TARGET_COMMIT (
+    echo [X] Не удалось получить коммиты
+    pause
+    exit /b 1
+)
+
+echo [+] Коммит: %TARGET_COMMIT:~0,7%
+echo.
+
+:: Download ZIP
+set "TEMP_DIR=%TEMP%\tgbot-install-%RANDOM%"
+mkdir "%TEMP_DIR%" 2>nul
+
+echo [+] Загрузка исходников...
+curl -fsSL --max-time 120 "https://github.com/%REPO%/archive/%TARGET_COMMIT%.zip" -o "%TEMP_DIR%\source.zip" 2>nul
+
+if not exist "%TEMP_DIR%\source.zip" (
+    echo [X] Не удалось загрузить архив
+    rmdir /s /q "%TEMP_DIR%" 2>nul
+    pause
+    exit /b 1
+)
+
+powershell -Command "Expand-Archive -Path '%TEMP_DIR%\source.zip' -DestinationPath '%TEMP_DIR%\extracted' -Force"
+
+:: Find source directory
+for /d %%D in ("%TEMP_DIR%\extracted\*") do set "SRC_DIR=%%D"
+
+if not defined SRC_DIR (
+    echo [X] Не удалось распаковать архив
+    rmdir /s /q "%TEMP_DIR%" 2>nul
+    pause
+    exit /b 1
+)
+
+echo [+] Файлы загружены
+echo.
+
 :: ── Bot Data Input ──
 echo ┌──────────────────────────────────────────────────────────┐
-echo │  ШАГ 2/5: Ввод данных бота
+echo │  ШАГ 3/5: Ввод данных бота
 echo └──────────────────────────────────────────────────────────┘
 echo.
 
@@ -48,6 +117,7 @@ set /p BOT_TOKEN="BOT_TOKEN -> "
 
 if "!BOT_TOKEN!"=="" (
     echo [X] Токен не может быть пустым!
+    rmdir /s /q "%TEMP_DIR%" 2>nul
     pause
     exit /b 1
 )
@@ -64,7 +134,7 @@ echo.
 
 :: ── Create Directory ──
 echo ┌──────────────────────────────────────────────────────────┐
-echo │  ШАГ 3/5: Создание директории
+echo │  ШАГ 4/5: Создание директории
 echo └──────────────────────────────────────────────────────────┘
 echo.
 
@@ -81,25 +151,27 @@ echo.
 
 :: ── Copy & Build ──
 echo ┌──────────────────────────────────────────────────────────┐
-echo │  ШАГ 4/5: Копирование и сборка
+echo │  ШАГ 5/5: Копирование и сборка
 echo └──────────────────────────────────────────────────────────┘
 echo.
 
-set "SCRIPT_DIR=%~dp0"
-
-xcopy "%SCRIPT_DIR%cmd" "%INSTALL_DIR%\cmd\" /E /I /Q >nul
-xcopy "%SCRIPT_DIR%internal" "%INSTALL_DIR%\internal\" /E /I /Q >nul
-copy "%SCRIPT_DIR%go.mod" "%INSTALL_DIR%\" >nul
-copy "%SCRIPT_DIR%go.sum" "%INSTALL_DIR%\" >nul 2>nul
-copy "%SCRIPT_DIR%update.bat" "%INSTALL_DIR%\" >nul 2>nul
-copy "%SCRIPT_DIR%install.bat" "%INSTALL_DIR%\" >nul 2>nul
-copy "%SCRIPT_DIR%uninstall.bat" "%INSTALL_DIR%\" >nul 2>nul
-copy "%SCRIPT_DIR%update.sh" "%INSTALL_DIR%\" >nul 2>nul
-copy "%SCRIPT_DIR%install.sh" "%INSTALL_DIR%\" >nul 2>nul
-copy "%SCRIPT_DIR%uninstall.sh" "%INSTALL_DIR%\" >nul 2>nul
+xcopy "%SRC_DIR%\cmd" "%INSTALL_DIR%\cmd\" /E /I /Q >nul
+xcopy "%SRC_DIR%\internal" "%INSTALL_DIR%\internal\" /E /I /Q >nul
+copy "%SRC_DIR%\go.mod" "%INSTALL_DIR%\" >nul
+copy "%SRC_DIR%\go.sum" "%INSTALL_DIR%\" >nul 2>nul
+copy "%SRC_DIR%\update.bat" "%INSTALL_DIR%\" >nul 2>nul
+copy "%SRC_DIR%\install.bat" "%INSTALL_DIR%\" >nul 2>nul
+copy "%SRC_DIR%\uninstall.bat" "%INSTALL_DIR%\" >nul 2>nul
+copy "%SRC_DIR%\update.sh" "%INSTALL_DIR%\" >nul 2>nul
+copy "%SRC_DIR%\install.sh" "%INSTALL_DIR%\" >nul 2>nul
+copy "%SRC_DIR%\uninstall.sh" "%INSTALL_DIR%\" >nul 2>nul
 
 echo [+] Файлы скопированы
 echo.
+
+:: Save commit
+echo %TARGET_COMMIT%>"%INSTALL_DIR%\.commit"
+echo dev>"%INSTALL_DIR%\.version"
 
 cd /d "%INSTALL_DIR%"
 
@@ -111,6 +183,7 @@ call go build -o tgbot.exe .\cmd\bot\
 
 if not exist "%INSTALL_DIR%\tgbot.exe" (
     echo [X] Ошибка сборки!
+    rmdir /s /q "%TEMP_DIR%" 2>nul
     pause
     exit /b 1
 )
@@ -118,12 +191,9 @@ if not exist "%INSTALL_DIR%\tgbot.exe" (
 echo [+] Бот собран успешно
 echo.
 
-:: ── Save Config ──
-echo ┌──────────────────────────────────────────────────────────┐
-echo │  ШАГ 5/5: Настройка сервиса
-echo └──────────────────────────────────────────────────────────┘
-echo.
+rmdir /s /q "%TEMP_DIR%" 2>nul
 
+:: ── Save Config ──
 (
 echo BOT_TOKEN=%BOT_TOKEN%
 echo ADMIN_ID=%ADMIN_ID%
@@ -169,6 +239,7 @@ echo.
 echo Директория:      %INSTALL_DIR%
 echo Конфиг:          %INSTALL_DIR%\.env
 echo Настройки бота:  %INSTALL_DIR%\settings.json
+echo Commit:          %TARGET_COMMIT:~0,7%
 echo.
 echo Управление:
 echo   Запуск:        %INSTALL_DIR%\StartBot.lnk

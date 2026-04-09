@@ -12,6 +12,7 @@ NC='\033[0m'
 
 SERVICE_NAME="tgbot"
 INSTALL_DIR="/opt/tgbot"
+REPO="Blix-Platform/UltimateTelegramConnectionBotGO"
 
 print_header() {
     echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
@@ -115,40 +116,78 @@ else
 fi
 
 echo ""
-print_step "ШАГ 2/7: Загрузка последней версии"
+print_step "ШАГ 2/7: Загрузка файлов проекта"
+
+# Get latest commit (or latest [UP] commit)
+print_info "Получение последнего коммита..."
+COMMITS_RAW=$(curl -fsSL --max-time 15 "https://api.github.com/repos/$REPO/commits?per_page=10" 2>/dev/null || echo "")
+
+TARGET_COMMIT=""
+TARGET_VER="dev"
+
+if [ -n "$COMMITS_RAW" ]; then
+    # Try to find first [UP] commit
+    while IFS= read -r SHA_LINE; do
+        SHA=$(echo "$SHA_LINE" | sed 's/"sha":"//;s/"//')
+        [ -z "$SHA" ] && continue
+
+        # Get commit detail
+        COMMIT_DETAIL=$(curl -fsSL --max-time 10 "https://api.github.com/repos/$REPO/commits/$SHA" 2>/dev/null || echo "")
+        MSG=$(echo "$COMMIT_DETAIL" | grep -o '"message":"[^"]*"' | head -1 | sed 's/"message":"//;s/"//')
+
+        if echo "$MSG" | grep -qi '^\[UP\]'; then
+            TARGET_COMMIT="$SHA"
+            MSG_CLEAN=$(echo "$MSG" | sed 's/^\[UP\][[:space:]]*//;s/^\[up\][[:space:]]*//')
+            TARGET_VER="$MSG_CLEAN"
+            break
+        fi
+    done < <(echo "$COMMITS_RAW" | grep -o '"sha":"[^"]*"')
+
+    # Fallback to latest commit
+    if [ -z "$TARGET_COMMIT" ]; then
+        TARGET_COMMIT=$(echo "$COMMITS_RAW" | grep -o '"sha":"[^"]*"' | head -1 | sed 's/"sha":"//;s/"//')
+    fi
+fi
+
+if [ -z "$TARGET_COMMIT" ]; then
+    print_error "Не удалось получить коммиты"
+    exit 1
+fi
+
+print_success "Коммит: ${TARGET_COMMIT:0:7}"
+
+echo -e "${YELLOW}ℹ️  Загрузка файлов из коммита...${NC}"
 
 TEMP_DIR=$(mktemp -d)
 trap "rm -rf $TEMP_DIR" EXIT
 
-print_info "Проверка доступных версий..."
+# Download essential files directly from commit
+FILES_NEEDED=("cmd/bot/main.go" "go.mod" "go.sum" "update.sh" "install.sh" "uninstall.sh" "update.bat" "install.bat" "uninstall.bat")
 
-LATEST_TAG=""
-RELEASES=$(curl -fsSL --max-time 10 https://api.github.com/repos/Blix-Platform/UltimateTelegramConnectionBotGO/releases 2>/dev/null || echo "[]")
+for FILE in "${FILES_NEEDED[@]}"; do
+    FILE_URL="https://raw.githubusercontent.com/$REPO/$TARGET_COMMIT/$FILE"
+    curl -fsSL --max-time 30 "$FILE_URL" -o "$TEMP_DIR/$FILE" 2>/dev/null || {
+        print_info "Пропуск $FILE (не найден)"
+    }
+done
 
-HAS_RELEASES=$(echo "$RELEASES" | grep -c '"tag_name"' || true)
+# Download internal directory as ZIP
+print_info "Загрузка internal/..."
+curl -fsSL --max-time 120 "https://github.com/$REPO/archive/$TARGET_COMMIT.zip" -o "$TEMP_DIR/source.zip" 2>/dev/null || {
+    print_error "Не удалось загрузить исходники"
+    exit 1
+}
 
-if [ "$HAS_RELEASES" -gt 0 ]; then
-    LATEST_TAG=$(echo "$RELEASES" | grep -m1 '"tag_name"' | sed 's/.*"tag_name": *"//;s/".*//')
-fi
+unzip -q "$TEMP_DIR/source.zip" -d "$TEMP_DIR/extracted"
 
-if [ -n "$LATEST_TAG" ]; then
-    ZIP_URL="https://github.com/Blix-Platform/UltimateTelegramConnectionBotGO/archive/refs/tags/${LATEST_TAG}.zip"
-    print_success "Найден релиз: $LATEST_TAG"
-else
-    LATEST_TAG="main"
-    ZIP_URL="https://github.com/Blix-Platform/UltimateTelegramConnectionBotGO/archive/refs/heads/main.zip"
-    print_info "Релизов не найдено, загружается последняя версия (main)"
-fi
+SRC_DIR=$(find "$TEMP_DIR/extracted" -mindepth 1 -maxdepth 1 -type d | head -1)
 
-echo -e "${YELLOW}ℹ️  Загрузка...${NC}"
-curl -fsSL -L --max-time 120 "$ZIP_URL" -o "$TEMP_DIR/release.zip"
-
-if [ ! -f "$TEMP_DIR/release.zip" ] || [ ! -s "$TEMP_DIR/release.zip" ]; then
-    print_error "Не удалось загрузить архив"
+if [ -z "$SRC_DIR" ]; then
+    print_error "Не удалось распаковать архив"
     exit 1
 fi
 
-print_success "Архив загружен"
+print_success "Файлы загружены"
 
 echo ""
 print_step "ШАГ 3/7: Ввод данных бота"
@@ -187,25 +226,22 @@ print_success "Директория создана: $INSTALL_DIR"
 echo ""
 print_step "ШАГ 5/7: Распаковка файлов"
 
-unzip -q "$TEMP_DIR/release.zip" -d "$TEMP_DIR/extracted"
-
-SRC_DIR=$(find "$TEMP_DIR/extracted" -mindepth 1 -maxdepth 1 -type d | head -1)
-
-if [ -z "$SRC_DIR" ]; then
-    print_error "Не удалось распаковать архив"
-    exit 1
-fi
-
-cp -r "$SRC_DIR/cmd" "$INSTALL_DIR/"
+cp -r "$SRC_DIR/cmd" "$INSTALL_DIR/" 2>/dev/null || cp "$TEMP_DIR/cmd/bot/main.go" "$INSTALL_DIR/cmd/bot/main.go" 2>/dev/null || true
 cp -r "$SRC_DIR/internal" "$INSTALL_DIR/"
 cp "$SRC_DIR/go.mod" "$INSTALL_DIR/"
 cp "$SRC_DIR/go.sum" "$INSTALL_DIR/" 2>/dev/null || true
-cp "$SRC_DIR/update.sh" "$INSTALL_DIR/"
-cp "$SRC_DIR/install.sh" "$INSTALL_DIR/"
-chmod +x "$INSTALL_DIR/update.sh" "$INSTALL_DIR/install.sh"
+cp "$SRC_DIR/update.sh" "$INSTALL_DIR/" 2>/dev/null || cp "$TEMP_DIR/update.sh" "$INSTALL_DIR/" 2>/dev/null || true
+cp "$SRC_DIR/install.sh" "$INSTALL_DIR/" 2>/dev/null || cp "$TEMP_DIR/install.sh" "$INSTALL_DIR/" 2>/dev/null || true
+cp "$SRC_DIR/uninstall.sh" "$INSTALL_DIR/" 2>/dev/null || cp "$TEMP_DIR/uninstall.sh" "$INSTALL_DIR/" 2>/dev/null || true
+cp "$SRC_DIR/update.bat" "$INSTALL_DIR/" 2>/dev/null || cp "$TEMP_DIR/update.bat" "$INSTALL_DIR/" 2>/dev/null || true
+cp "$SRC_DIR/install.bat" "$INSTALL_DIR/" 2>/dev/null || cp "$TEMP_DIR/install.bat" "$INSTALL_DIR/" 2>/dev/null || true
+cp "$SRC_DIR/uninstall.bat" "$INSTALL_DIR/" 2>/dev/null || cp "$TEMP_DIR/uninstall.bat" "$INSTALL_DIR/" 2>/dev/null || true
+chmod +x "$INSTALL_DIR/update.sh" "$INSTALL_DIR/install.sh" 2>/dev/null
+chmod +x "$INSTALL_DIR/update.bat" "$INSTALL_DIR/install.bat" "$INSTALL_DIR/uninstall.bat" 2>/dev/null
 
-LATEST_VER=$(echo "$LATEST_TAG" | sed 's/^v//')
-echo "$LATEST_VER" > "$INSTALL_DIR/.version"
+# Save version and commit
+echo "dev" > "$INSTALL_DIR/.version"
+echo "$TARGET_COMMIT" > "$INSTALL_DIR/.commit"
 
 print_success "Файлы распакованы"
 
@@ -219,13 +255,6 @@ go mod download
 go build -o tgbot ./cmd/bot/
 
 chmod +x "$INSTALL_DIR/tgbot"
-
-# Fetch latest commit SHA
-LATEST_COMMIT=$(curl -fsSL --max-time 5 "https://api.github.com/repos/Blix-Platform/UltimateTelegramConnectionBotGO/commits?per_page=1" 2>/dev/null | grep -o '"sha":"[^"]*"' | head -1 | sed 's/"sha":"//;s/"//')
-if [ -n "$LATEST_COMMIT" ]; then
-    echo "$LATEST_COMMIT" > "$INSTALL_DIR/.commit"
-    print_success "Commit SHA сохранён: ${LATEST_COMMIT:0:7}"
-fi
 
 print_success "Бот собран"
 
@@ -329,11 +358,7 @@ echo ""
 echo -e "${WHITE}📁 Директория:${NC}       ${CYAN}$INSTALL_DIR${NC}"
 echo -e "${WHITE}⚙️  Конфиг:${NC}          ${CYAN}$INSTALL_DIR/.env${NC}"
 echo -e "${WHITE}🗃  База данных:${NC}      ${CYAN}$INSTALL_DIR/bot.db${NC}"
-echo -e "${WHITE}📦 Версия:${NC}            ${CYAN}v$LATEST_VER${NC}"
-if [ -f "$INSTALL_DIR/.commit" ]; then
-    COMMIT_SHA=$(cat "$INSTALL_DIR/.commit")
-    echo -e "${WHITE}🔖 Commit:${NC}           ${CYAN}${COMMIT_SHA:0:7}${NC}"
-fi
+echo -e "${WHITE}🔖 Commit:${NC}            ${CYAN}${TARGET_COMMIT:0:7}${NC}"
 echo ""
 if [ "$HAS_SYSTEMD" = true ]; then
     echo -e "${WHITE}${BOLD}Управление сервисом:${NC}"

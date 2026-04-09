@@ -15,6 +15,7 @@ echo.
 
 set "SCRIPT_DIR=%~dp0"
 set "INSTALL_DIR=%SCRIPT_DIR%"
+set "REPO=Blix-Platform/UltimateTelegramConnectionBotGO"
 
 :: ── Check Go ──
 echo ┌──────────────────────────────────────────────────────────┐
@@ -45,55 +46,79 @@ if not exist "%INSTALL_DIR%\.env" (
     exit /b 1
 )
 
-:: ── Download ZIP ──
+:: ── Check commits ──
 echo ┌──────────────────────────────────────────────────────────┐
-echo │  ШАГ 2/4: Загрузка последней версии
+echo │  ШАГ 2/4: Проверка коммитов [UP]
+echo └──────────────────────────────────────────────────────────┘
+echo.
+
+set "CURRENT_COMMIT="
+if exist "%INSTALL_DIR%\.commit" (
+    set /p CURRENT_COMMIT=<"%INSTALL_DIR%\.commit"
+)
+
+echo [+] Проверка коммитов с GitHub...
+
+:: Get commits
+set "COMMITS_FILE=%TEMP%\tgbot_commits.json"
+curl -fsSL --max-time 15 "https://api.github.com/repos/%REPO%/commits?per_page=50" -o "%COMMITS_FILE%" 2>nul
+if not exist "%COMMITS_FILE%" (
+    echo [X] Не удалось получить коммиты
+    pause
+    exit /b 1
+)
+
+:: Find first [UP] commit
+set "UP_COMMIT="
+set "UP_MESSAGE="
+
+for /f "tokens=*" %%A in ('powershell -Command "$c=Get-Content '%COMMITS_FILE%' -Raw | ConvertFrom-Json; foreach($x in $c){ $m=$x.commit.message; if($m -match '^\[UP\]'){Write-Host \"$($x.sha)|$($m -replace '^\[UP\]\s*',''); break}}"') do (
+    for /f "tokens=1,2 delims=|" %%B in ("%%A") do (
+        set "UP_COMMIT=%%B"
+        set "UP_MESSAGE=%%C"
+    )
+)
+
+if not defined UP_COMMIT (
+    if defined CURRENT_COMMIT (
+        echo [i] Нет новых коммитов [UP]
+        pause
+        exit /b 0
+    )
+    echo [i] Коммитов [UP] не найдено, используется последний коммит
+    for /f "tokens=*" %%A in ('powershell -Command "$c=Get-Content '%COMMITS_FILE%' -Raw | ConvertFrom-Json; Write-Host $c[0].sha"') do set "UP_COMMIT=%%A"
+)
+
+if not defined UP_COMMIT (
+    echo [X] Не найдено коммитов для обновления
+    del "%COMMITS_FILE%" 2>nul
+    pause
+    exit /b 1
+)
+
+echo [+] Коммит: %UP_COMMIT:~0,7% — %UP_MESSAGE%
+echo.
+
+del "%COMMITS_FILE%" 2>nul
+
+:: ── Download changed files ──
+echo ┌──────────────────────────────────────────────────────────┐
+echo │  ШАГ 3/4: Загрузка изменённых файлов
 echo └──────────────────────────────────────────────────────────┘
 echo.
 
 set "TEMP_DIR=%TEMP%\tgbot-update-%RANDOM%"
 mkdir "%TEMP_DIR%" 2>nul
 
-curl -fsSL -L --max-time 120 "https://github.com/Blix-Platform/UltimateTelegramConnectionBotGO/archive/refs/heads/main.zip" -o "%TEMP_DIR%\release.zip"
+:: Get file list from commit
+set "DETAIL_FILE=%TEMP%\tgbot_detail.json"
+curl -fsSL --max-time 15 "https://api.github.com/repos/%REPO%/commits/%UP_COMMIT%" -o "%DETAIL_FILE%" 2>nul
 
-if not exist "%TEMP_DIR%\release.zip" (
-    echo [X] Не удалось загрузить архив
-    rmdir /s /q "%TEMP_DIR%" 2>nul
-    pause
-    exit /b 1
-)
-
-echo [+] Архив загружен
-echo.
-
-:: ── Extract ──
-echo ┌──────────────────────────────────────────────────────────┐
-echo │  ШАГ 3/4: Распаковка и обновление файлов
-echo └──────────────────────────────────────────────────────────┘
-echo.
-
-powershell -Command "Expand-Archive -Path '%TEMP_DIR%\release.zip' -DestinationPath '%TEMP_DIR%\extracted' -Force"
-
-:: Find source directory
-for /d %%D in ("%TEMP_DIR%\extracted\*") do set "SRC_DIR=%%D"
-
-if not defined SRC_DIR (
-    echo [X] Не удалось распаковать архив
-    rmdir /s /q "%TEMP_DIR%" 2>nul
-    pause
-    exit /b 1
-)
-
-:: Backup .env
-set "ENV_BACKUP="
-if exist "%INSTALL_DIR%\.env" (
-    type "%INSTALL_DIR%\.env" > "%TEMP_DIR%\.env.bak"
-)
-
-:: Copy only changed files
 set UPDATED=0
 set SKIPPED=0
+set ERRORS=0
 
+:: Download each relevant file
 for %%F in (
     "cmd\bot\main.go"
     "go.mod"
@@ -109,37 +134,47 @@ for %%F in (
     set "REL_PATH=%%~F"
     set "REL_PATH=!REL_PATH:"=!"
 
-    if exist "%SRC_DIR%\!REL_PATH!" (
-        set "NEED_COPY=1"
+    curl -fsSL --max-time 30 "https://raw.githubusercontent.com/%REPO%/%UP_COMMIT%/!REL_PATH!" -o "%TEMP_DIR%\new_file" 2>nul
+    if not exist "%TEMP_DIR%\new_file" (
+        echo [!] Пропуск !REL_PATH! (не найден)
+        set /a SKIPPED+=1
+    ) else (
         if exist "%INSTALL_DIR%\!REL_PATH!" (
-            for %%A in ("%SRC_DIR%\!REL_PATH!") do set "HASH_NEW=%%~tA"
-            for %%A in ("%INSTALL_DIR%\!REL_PATH!") do set "HASH_OLD=%%~tA"
-            if "!HASH_NEW!"=="!HASH_OLD!" set "NEED_COPY=0"
-        )
-        if "!NEED_COPY!"=="1" (
-            copy /Y "%SRC_DIR%\!REL_PATH!" "%INSTALL_DIR%\!REL_PATH!" >nul
-            set /a UPDATED+=1
+            fc /b "%TEMP_DIR%\new_file" "%INSTALL_DIR%\!REL_PATH!" >nul 2>&1
+            if !errorlevel! equ 0 (
+                set /a SKIPPED+=1
+            ) else (
+                copy /Y "%TEMP_DIR%\new_file" "%INSTALL_DIR%\!REL_PATH!" >nul
+                set /a UPDATED+=1
+            )
         ) else (
-            set /a SKIPPED+=1
+            mkdir "%INSTALL_DIR%\!REL_PATH!\.." 2>nul
+            copy /Y "%TEMP_DIR%\new_file" "%INSTALL_DIR%\!REL_PATH!" >nul
+            set /a UPDATED+=1
+        )
+    )
+    del "%TEMP_DIR%\new_file" 2>nul
+)
+
+:: Download internal/ as ZIP
+curl -fsSL --max-time 120 "https://github.com/%REPO%/archive/%UP_COMMIT%.zip" -o "%TEMP_DIR%\source.zip" 2>nul
+if exist "%TEMP_DIR%\source.zip" (
+    powershell -Command "Expand-Archive -Path '%TEMP_DIR%\source.zip' -DestinationPath '%TEMP_DIR%\extracted' -Force"
+    for /d %%D in ("%TEMP_DIR%\extracted\*") do (
+        if exist "%%D\internal\" (
+            robocopy "%%D\internal" "%INSTALL_DIR%\internal" /MIR /NJH /NJS /NFL /NDL
         )
     )
 )
 
-:: Recursively copy internal\*
-if exist "%SRC_DIR%\internal\" (
-    robocopy "%SRC_DIR%\internal" "%INSTALL_DIR%\internal" /MIR /NJH /NJS /NFL /NDL >nul
-)
+:: Save commit
+echo %UP_COMMIT%>"%INSTALL_DIR%\.commit"
 
-:: Restore .env
-if exist "%TEMP_DIR%\.env.bak" (
-    copy /Y "%TEMP_DIR%\.env.bak" "%INSTALL_DIR%\.env" >nul
-)
-
-:: Cleanup temp
+del "%TEMP_DIR%\source.zip" 2>nul
 rmdir /s /q "%TEMP_DIR%" 2>nul
 
-echo [+] Обновлён файлов: %UPDATED%
-echo [+] Пропущен файлов: %SKIPPED%
+echo [+] Обновлено файлов: %UPDATED%
+echo [+] Пропущено файлов: %SKIPPED%
 echo.
 
 :: ── Build ──
@@ -186,6 +221,7 @@ echo ║              Система обновлена!                        
 echo ║                                                          ║
 echo ╚══════════════════════════════════════════════════════════╝
 echo.
+echo Commit: %UP_COMMIT:~0,7%
 echo [+] Все данные сохранены. Бот работает.
 echo.
 pause
