@@ -1272,6 +1272,9 @@ func messageEntitiesToHTML(text string, entities []tgbotapi.MessageEntity) strin
 	var boundaries []boundary
 	runes := []rune(text)
 
+	// Track consumed ranges for text_link and text_mention (to avoid double-writing)
+	var consumedRanges [][2]int
+
 	for _, e := range entities {
 		start := e.Offset
 		end := e.Offset + e.Length
@@ -1282,10 +1285,10 @@ func messageEntitiesToHTML(text string, entities []tgbotapi.MessageEntity) strin
 			url := strings.ReplaceAll(e.URL, "&", "&amp;")
 			url = strings.ReplaceAll(url, "\"", "&quot;")
 			boundaries = append(boundaries, boundary{start, []string{fmt.Sprintf("<a href=\"%s\">%s</a>", url, linkText)}})
-			continue
+			consumedRanges = append(consumedRanges, [2]int{start, end})
 		case "text_mention":
 			boundaries = append(boundaries, boundary{start, []string{fmt.Sprintf("<a href=\"tg://user?id=%d\">%s</a>", e.User.ID, escapeHTML(string(runes[start:end])))}})
-			continue
+			consumedRanges = append(consumedRanges, [2]int{start, end})
 		case "bold":
 			boundaries = append(boundaries, boundary{start, []string{"<b>"}})
 			boundaries = append(boundaries, boundary{end, []string{"</b>"}})
@@ -1316,6 +1319,15 @@ func messageEntitiesToHTML(text string, entities []tgbotapi.MessageEntity) strin
 		}
 	}
 
+	isConsumed := func(pos int) bool {
+		for _, r := range consumedRanges {
+			if pos >= r[0] && pos < r[1] {
+				return true
+			}
+		}
+		return false
+	}
+
 	var result strings.Builder
 	prev := 0
 	for _, b := range boundaries {
@@ -1325,16 +1337,22 @@ func messageEntitiesToHTML(text string, entities []tgbotapi.MessageEntity) strin
 		if b.Offset > len(runes) {
 			b.Offset = len(runes)
 		}
-		if b.Offset > prev {
-			result.WriteString(escapeHTML(string(runes[prev:b.Offset])))
+		// Write text from prev to b.Offset, skipping consumed ranges
+		for i := prev; i < b.Offset; i++ {
+			if !isConsumed(i) {
+				result.WriteString(escapeHTML(string(runes[i])))
+			}
 		}
 		for _, tag := range b.Tags {
 			result.WriteString(tag)
 		}
 		prev = b.Offset
 	}
-	if prev < len(runes) {
-		result.WriteString(escapeHTML(string(runes[prev:])))
+	// Write remaining text, skipping consumed ranges
+	for i := prev; i < len(runes); i++ {
+		if !isConsumed(i) {
+			result.WriteString(escapeHTML(string(runes[i])))
+		}
 	}
 
 	return result.String()
