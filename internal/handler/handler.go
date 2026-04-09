@@ -529,6 +529,12 @@ func (h *Handler) handleCategoryButton(cb *tgbotapi.CallbackQuery) {
 	))
 	keyboard.InlineKeyboard = rows
 
+	// Delete the categories menu message
+	h.bot.Request(tgbotapi.DeleteMessageConfig{
+		ChatID:    cb.Message.Chat.ID,
+		MessageID: cb.Message.MessageID,
+	})
+
 	msg := tgbotapi.NewMessage(cb.Message.Chat.ID, fmt.Sprintf("%s <b>%s</b>\n\nВыберите сообщение для редактирования:", cat.Icon, cat.Name))
 	msg.ParseMode = "HTML"
 	msg.ReplyMarkup = keyboard

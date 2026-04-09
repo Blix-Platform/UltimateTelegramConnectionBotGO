@@ -29,7 +29,7 @@ type SettingsCategory struct {
 
 var AvailableMessages = []MessageKey{
 	// Пользовательские сообщения
-	{Key: "start_msg", Label: "/start — Приветствие", Default: "Привет! Это бот для отправки предложений. Напишите ваше сообщение, и оно будет доставлено администратору.", Category: "user"},
+	{Key: "start_msg", Label: "Приветствие", Default: "Привет! Это бот для отправки предложений. Напишите ваше сообщение, и оно будет доставлено администратору.", Category: "user"},
 	{Key: "take_msg", Label: "Запрос ввода", Default: "Пожалуйста, отправьте текстовое сообщение или медиафайл.", Category: "user"},
 	{Key: "gift_msg", Label: "Успешная отправка (текст)", Default: "Ваше сообщение успешно отправлено администратору!", Category: "user"},
 	{Key: "fgift_msg", Label: "Успешная отправка (файл)", Default: "Ваш файл успешно отправлен администратору!", Category: "user"},
@@ -41,13 +41,13 @@ var AvailableMessages = []MessageKey{
 	{Key: "ar_msg", Label: "Подсказка про reply", Default: "Пожалуйста, ответьте на сообщение пользователя, чтобы отправить ему ответ.", Category: "admin"},
 
 	// Блокировки
-	{Key: "ban_usage_msg", Label: "Инструкция /ban", Default: "Использование: /ban <user_id> <часы> [причина]\nИли ответьте на сообщение пользователя: /ban <часы> [причина]", Category: "ban"},
+	{Key: "ban_usage_msg", Label: "Инструкция ban", Default: "Использование: /ban <user_id> <часы> [причина]\nИли ответьте на сообщение пользователя: /ban <часы> [причина]", Category: "ban"},
 	{Key: "ban_success_msg", Label: "Бан (без причины)", Default: "Пользователь {user_id} заблокирован на {hours} ч.", Category: "ban"},
 	{Key: "ban_success_reason_msg", Label: "Бан (с причиной)", Default: "Пользователь {user_id} заблокирован на {hours} ч. Причина: {reason}", Category: "ban"},
 	{Key: "ban_no_reason_msg", Label: "Если причина не указана", Default: "Причина не указана.", Category: "ban"},
 	{Key: "banned_msg", Label: "Сообщение заблокированному", Default: "Вы заблокированы.\nОсталось времени: {time}\nПричина: {reason}", Category: "ban"},
-	{Key: "unban_success_msg", Label: "Успешный /unban", Default: "✅ Пользователь {user_id} разблокирован", Category: "ban"},
-	{Key: "unban_usage_msg", Label: "Инструкция /unban", Default: "Использование: /unban <user_id>\nИли ответьте на сообщение пользователя: /unban", Category: "ban"},
+	{Key: "unban_success_msg", Label: "Успешный unban", Default: "✅ Пользователь {user_id} разблокирован", Category: "ban"},
+	{Key: "unban_usage_msg", Label: "Инструкция unban", Default: "Использование: /unban <user_id>\nИли ответьте на сообщение пользователя: /unban", Category: "ban"},
 }
 
 var Categories = []SettingsCategory{
