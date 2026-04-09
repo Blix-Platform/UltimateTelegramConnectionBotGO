@@ -24,14 +24,16 @@ type Handler struct {
 	settings *settings.BotSettings
 	adminID  int64
 
-	mu            sync.Mutex
-	editingAdmins map[int64]string
+	mu              sync.Mutex
+	editingAdmins   map[int64]string
+	currentCategory map[int64]string
 }
 
 func New(bot *tgbotapi.BotAPI, s *store.Store, st *settings.BotSettings, adminID int64) *Handler {
 	return &Handler{
 		bot: bot, store: s, settings: st, adminID: adminID,
-		editingAdmins: make(map[int64]string),
+		editingAdmins:   make(map[int64]string),
+		currentCategory: make(map[int64]string),
 	}
 }
 
@@ -460,6 +462,8 @@ func (h *Handler) handleCallback(cb *tgbotapi.CallbackQuery) {
 		h.handleBackToSettings(cb)
 	case strings.HasPrefix(cb.Data, "cat_"):
 		h.handleCategoryButton(cb)
+	case cb.Data == "back_to_categories":
+		h.handleBackToCategories(cb)
 	}
 }
 
@@ -499,6 +503,39 @@ func (h *Handler) sendCategoriesMenu(chatID int64) {
 	h.bot.Send(msg)
 }
 
+func (h *Handler) sendCategoryMenu(chatID int64, catName string) {
+	var cat *settings.SettingsCategory
+	for i := range settings.Categories {
+		if settings.Categories[i].Name == catName {
+			cat = &settings.Categories[i]
+			break
+		}
+	}
+	if cat == nil {
+		h.sendCategoriesMenu(chatID)
+		return
+	}
+
+	keyboard := tgbotapi.NewInlineKeyboardMarkup()
+	var rows [][]tgbotapi.InlineKeyboardButton
+
+	for _, mk := range cat.Messages {
+		safeLabel := strings.ReplaceAll(mk.Label, "/", "&#47;")
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(safeLabel, "edit_"+mk.Key),
+		))
+	}
+	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад к категориям", "back_to_categories"),
+	))
+	keyboard.InlineKeyboard = rows
+
+	msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("%s <b>%s</b>\n\nВыберите сообщение для редактирования:", cat.Icon, cat.Name))
+	msg.ParseMode = "HTML"
+	msg.ReplyMarkup = keyboard
+	h.bot.Send(msg)
+}
+
 func (h *Handler) handleCategoryButton(cb *tgbotapi.CallbackQuery) {
 	catName := strings.TrimPrefix(cb.Data, "cat_")
 
@@ -515,6 +552,10 @@ func (h *Handler) handleCategoryButton(cb *tgbotapi.CallbackQuery) {
 		return
 	}
 
+	h.mu.Lock()
+	h.currentCategory[cb.Message.Chat.ID] = catName
+	h.mu.Unlock()
+
 	keyboard := tgbotapi.NewInlineKeyboardMarkup()
 	var rows [][]tgbotapi.InlineKeyboardButton
 
@@ -525,7 +566,7 @@ func (h *Handler) handleCategoryButton(cb *tgbotapi.CallbackQuery) {
 		))
 	}
 	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-		tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад к категориям", "section_messages"),
+		tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад к категориям", "back_to_categories"),
 	))
 	keyboard.InlineKeyboard = rows
 
@@ -540,6 +581,20 @@ func (h *Handler) handleCategoryButton(cb *tgbotapi.CallbackQuery) {
 	msg.ReplyMarkup = keyboard
 	h.bot.Send(msg)
 
+	h.bot.Request(tgbotapi.CallbackConfig{CallbackQueryID: cb.ID, ShowAlert: false})
+}
+
+func (h *Handler) handleBackToCategories(cb *tgbotapi.CallbackQuery) {
+	h.mu.Lock()
+	delete(h.editingAdmins, cb.Message.Chat.ID)
+	delete(h.currentCategory, cb.Message.Chat.ID)
+	h.mu.Unlock()
+
+	h.bot.Request(tgbotapi.DeleteMessageConfig{
+		ChatID:    cb.Message.Chat.ID,
+		MessageID: cb.Message.MessageID,
+	})
+	h.sendCategoriesMenu(cb.Message.Chat.ID)
 	h.bot.Request(tgbotapi.CallbackConfig{CallbackQueryID: cb.ID, ShowAlert: false})
 }
 
@@ -728,9 +783,11 @@ func (h *Handler) handleEditButton(cb *tgbotapi.CallbackQuery) {
 	currentValue := h.settings.Get(key)
 
 	label := ""
+	var msgCategory string
 	for _, mk := range settings.AvailableMessages {
 		if mk.Key == key {
 			label = mk.Label
+			msgCategory = mk.Category
 			break
 		}
 	}
@@ -756,6 +813,9 @@ func (h *Handler) handleEditButton(cb *tgbotapi.CallbackQuery) {
 
 	h.mu.Lock()
 	h.editingAdmins[cb.Message.Chat.ID] = key
+	if msgCategory != "" {
+		h.currentCategory[cb.Message.Chat.ID] = msgCategory
+	}
 	h.mu.Unlock()
 
 	h.bot.Request(tgbotapi.CallbackConfig{CallbackQueryID: cb.ID, ShowAlert: false})
@@ -784,23 +844,33 @@ func (h *Handler) handleSettingsEdit(message *tgbotapi.Message, key string) {
 	}
 
 	label := ""
+	var msgCategory string
 	for _, mk := range settings.AvailableMessages {
 		if mk.Key == key {
 			label = mk.Label
+			msgCategory = mk.Category
 			break
 		}
 	}
 
 	h.mu.Lock()
 	delete(h.editingAdmins, message.Chat.ID)
+	cat := h.currentCategory[message.Chat.ID]
 	h.mu.Unlock()
 
-	response := fmt.Sprintf("✅ <b>%s</b> успешно обновлено!\n\n📌 Новое значение:\n<pre>%s</pre>", label, newValue)
+	response := fmt.Sprintf("✅ <b>%s</b> успешно обновлено!", label)
 	msg := tgbotapi.NewMessage(message.Chat.ID, response)
 	msg.ParseMode = "HTML"
 	h.bot.Send(msg)
 
-	h.sendCategoriesMenu(message.Chat.ID)
+	// Return to the category the message belongs to
+	if cat != "" {
+		h.sendCategoryMenu(message.Chat.ID, cat)
+	} else if msgCategory != "" {
+		h.sendCategoryMenu(message.Chat.ID, msgCategory)
+	} else {
+		h.sendCategoriesMenu(message.Chat.ID)
+	}
 }
 
 func (h *Handler) handleResetSettings(message *tgbotapi.Message) {
