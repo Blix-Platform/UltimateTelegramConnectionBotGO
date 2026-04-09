@@ -181,6 +181,8 @@ cp -r "$SOURCE_DIR/cmd" "$INSTALL_DIR/"
 cp -r "$SOURCE_DIR/internal" "$INSTALL_DIR/"
 cp "$SOURCE_DIR/go.mod" "$INSTALL_DIR/"
 cp "$SOURCE_DIR/go.sum" "$INSTALL_DIR/" 2>/dev/null || true
+cp "$SOURCE_DIR/update.sh" "$INSTALL_DIR/"
+chmod +x "$INSTALL_DIR/update.sh"
 
 print_success "Файлы скопированы"
 

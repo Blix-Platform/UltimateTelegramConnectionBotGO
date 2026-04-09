@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"UltimateTelegramConnectionBotGO/internal/handler"
 	"UltimateTelegramConnectionBotGO/internal/settings"
@@ -13,6 +14,10 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
+
+func contains(s, substr string) bool {
+	return strings.Contains(s, substr)
+}
 
 func main() {
 	botToken := os.Getenv("BOT_TOKEN")
@@ -29,6 +34,10 @@ func main() {
 
 	bot, err := tgbotapi.NewBotAPI(botToken)
 	if err != nil {
+		errStr := err.Error()
+		if contains(errStr, "Unauthorized") || contains(errStr, "SESSION_REVOKED") || contains(errStr, "401") {
+			log.Fatal("Ошибка авторизации. Токен бота недействителен или отозван. Проверьте токен в /opt/tgbot/.env")
+		}
 		log.Fatal(err)
 	}
 

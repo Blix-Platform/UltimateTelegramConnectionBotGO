@@ -3,6 +3,8 @@ package handler
 import (
 	"fmt"
 	"log"
+	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -62,6 +64,8 @@ func (h *Handler) HandleUpdate(update tgbotapi.Update) {
 			h.handleSettings(msg)
 		case "unban":
 			h.handleUnban(msg)
+		case "update":
+			h.handleUpdate(msg)
 		}
 		return
 	}
@@ -253,6 +257,33 @@ func (h *Handler) handleUnban(message *tgbotapi.Message) {
 
 	h.store.UnbanUser(userID)
 	h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("✅ Пользователь %d разблокирован", userID)))
+}
+
+func (h *Handler) handleUpdate(message *tgbotapi.Message) {
+	if message.Chat.ID != h.adminID {
+		return
+	}
+
+	h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, "⏳ Обновление...\nБот перезапустится автоматически."))
+
+	scriptPath := "/opt/tgbot/update.sh"
+	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
+		h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, "❌ Скрипт обновления не найден.\nУбедитесь что бот установлен через install.sh"))
+		return
+	}
+
+	cmd := exec.Command("sudo", "bash", scriptPath)
+	output, err := cmd.CombinedOutput()
+
+	if err != nil {
+		h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("❌ Ошибка обновления:\n<pre>%s</pre>", string(output))))
+		return
+	}
+
+	go func() {
+		time.Sleep(3 * time.Second)
+		os.Exit(0)
+	}()
 }
 
 func (h *Handler) handleSettings(message *tgbotapi.Message) {
