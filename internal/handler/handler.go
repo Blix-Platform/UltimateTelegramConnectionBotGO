@@ -838,13 +838,8 @@ func (h *Handler) handleEditButton(cb *tgbotapi.CallbackQuery) {
 	safePreview = strings.ReplaceAll(safePreview, ">", "&gt;")
 
 	text := fmt.Sprintf(
-		"📝 %s\n\n📌 Текущее значение:\n<code>%s</code>%s\n\n✏️ Отправьте новое сообщение для изменения:\n\n💡 <b>Поддерживается HTML:</b>\n"+
-			"<b>жирный</b> → <code>&lt;b&gt;жирный&lt;/b&gt;</code>\n"+
-			"<i>курсив</i> → <code>&lt;i&gt;курсив&lt;/i&gt;</code>\n"+
-			"<a href=\"https://example.com\">ссылка</a> → <code>&lt;a href=\"url\"&gt;ссылка&lt;/a&gt;</code>\n"+
-			"<code>код</code> → <code>&lt;code&gt;код&lt;/code&gt;</code>\n"+
-			"<u>подчёркнутый</u> → <code>&lt;u&gt;подчёркнутый&lt;/u&gt;</code>\n"+
-			"<s>зачёркнутый</s> → <code>&lt;s&gt;зачёркнутый&lt;/s&gt;</code>",
+		"📝 %s\n\n📌 Текущее значение:\n<code>%s</code>%s\n\n✏️ Отправьте сообщение для изменения:\n\n💡 Выделите текст и выберите форматирование в меню Telegram:\n"+
+			"<b>жирный</b> | <i>курсив</i> | <u>подчёркнутый</u> | <s>зачёркнутый</s> | <code>код</code> | ссылка",
 		safeLabel, safePreview, photoInfo,
 	)
 
@@ -884,14 +879,15 @@ func (h *Handler) handleSettingsEdit(message *tgbotapi.Message, key string) {
 	if len(message.Photo) > 0 {
 		photo := message.Photo[len(message.Photo)-1]
 		photoValue = photo.FileID
-		// Get text from caption or message.Text
+		// Get text from caption or message.Text, convert entities to HTML
 		if message.Caption != "" {
-			textValue = message.Caption
+			textValue = messageEntitiesToHTML(message.Caption, message.CaptionEntities)
 		} else {
-			textValue = message.Text
+			textValue = messageEntitiesToHTML(message.Text, message.Entities)
 		}
 	} else {
-		textValue = message.Text
+		// Convert Telegram formatting to HTML
+		textValue = messageEntitiesToHTML(message.Text, message.Entities)
 		// No photo sent — keep existing photo if any
 		if hasPhotoBefore {
 			photoValue = h.settings.GetPhoto(key)
@@ -1024,4 +1020,127 @@ func isSupportedContent(message *tgbotapi.Message) bool {
 		message.Video != nil ||
 		message.Document != nil ||
 		message.Audio != nil
+}
+
+// messageEntitiesToHTML converts Telegram message text and entities to HTML.
+// Handles: bold, italic, underline, strikethrough, code, pre, text_link, text_mention.
+func messageEntitiesToHTML(text string, entities []tgbotapi.MessageEntity) string {
+	if len(entities) == 0 {
+		// Escape HTML entities in plain text
+		text = strings.ReplaceAll(text, "&", "&amp;")
+		text = strings.ReplaceAll(text, "<", "&lt;")
+		text = strings.ReplaceAll(text, ">", "&gt;")
+		return text
+	}
+
+	type tag struct {
+		Start int
+		End   int
+		Open  bool
+		HTML  string
+	}
+
+	var tags []tag
+	runes := []rune(text)
+
+	for _, e := range entities {
+		start := e.Offset
+		length := e.Length
+		end := start + length
+
+		switch e.Type {
+		case "bold":
+			tags = append(tags, tag{start, end, true, "<b>"})
+			tags = append(tags, tag{start, end, false, "</b>"})
+		case "italic":
+			tags = append(tags, tag{start, end, true, "<i>"})
+			tags = append(tags, tag{start, end, false, "</i>"})
+		case "underline":
+			tags = append(tags, tag{start, end, true, "<u>"})
+			tags = append(tags, tag{start, end, false, "</u>"})
+		case "strikethrough":
+			tags = append(tags, tag{start, end, true, "<s>"})
+			tags = append(tags, tag{start, end, false, "</s>"})
+		case "code":
+			tags = append(tags, tag{start, end, true, "<code>"})
+			tags = append(tags, tag{start, end, false, "</code>"})
+		case "pre":
+			tags = append(tags, tag{start, end, true, "<pre>"})
+			tags = append(tags, tag{start, end, false, "</pre>"})
+		case "text_link":
+			linkText := string(runes[start:end])
+			escaped := strings.ReplaceAll(e.URL, "&", "&amp;")
+			escaped = strings.ReplaceAll(escaped, "\"", "&quot;")
+			// Replace the text with an HTML link
+			text = string(runes[:start]) + fmt.Sprintf("<a href=\"%s\">%s</a>", escaped, linkText) + string(runes[end:])
+			// Skip further processing for this range
+			continue
+		case "text_mention":
+			name := string(runes[start:end])
+			text = string(runes[:start]) + fmt.Sprintf("<a href=\"tg://user?id=%d\">%s</a>", e.User.ID, name) + string(runes[end:])
+			continue
+		}
+	}
+
+	// Sort tags by position (open tags first at same position)
+	// We need to rebuild the text with tags inserted
+	// Simpler approach: iterate through runes and apply open/close tags at boundaries
+
+	type boundary struct {
+		Pos  int
+		Tags []string
+	}
+
+	boundaries := make(map[int][]string)
+	for _, t := range tags {
+		if t.Open {
+			boundaries[t.Start] = append(boundaries[t.Start], t.HTML)
+		} else {
+			boundaries[t.End] = append(boundaries[t.End], t.HTML)
+		}
+	}
+
+	// Collect unique positions
+	var positions []int
+	for pos := range boundaries {
+		positions = append(positions, pos)
+	}
+	// Sort positions
+	for i := 0; i < len(positions); i++ {
+		for j := i + 1; j < len(positions); j++ {
+			if positions[i] > positions[j] {
+				positions[i], positions[j] = positions[j], positions[i]
+			}
+		}
+	}
+
+	var result strings.Builder
+	prev := 0
+	for _, pos := range positions {
+		// Write text from prev to pos
+		if pos > len(runes) {
+			pos = len(runes)
+		}
+		if pos > prev {
+			chunk := string(runes[prev:pos])
+			chunk = strings.ReplaceAll(chunk, "&", "&amp;")
+			chunk = strings.ReplaceAll(chunk, "<", "&lt;")
+			chunk = strings.ReplaceAll(chunk, ">", "&gt;")
+			result.WriteString(chunk)
+		}
+		// Write tags
+		for _, tag := range boundaries[pos] {
+			result.WriteString(tag)
+		}
+		prev = pos
+	}
+	if prev < len(runes) {
+		chunk := string(runes[prev:])
+		chunk = strings.ReplaceAll(chunk, "&", "&amp;")
+		chunk = strings.ReplaceAll(chunk, "<", "&lt;")
+		chunk = strings.ReplaceAll(chunk, ">", "&gt;")
+		result.WriteString(chunk)
+	}
+
+	return result.String()
 }
