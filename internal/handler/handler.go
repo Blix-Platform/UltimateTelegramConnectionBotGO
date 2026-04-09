@@ -141,7 +141,8 @@ func (h *Handler) handleAdminMessage(message *tgbotapi.Message) {
 	var err error
 	switch {
 	case message.Text != "":
-		_, err = h.bot.Send(tgbotapi.NewMessage(userID, caption))
+		fullText := fmt.Sprintf("%s\n%s", h.settings.Get("otvet_msg"), message.Text)
+		_, err = h.bot.Send(tgbotapi.NewMessage(userID, fullText))
 	case len(message.Photo) > 0:
 		photo := message.Photo[len(message.Photo)-1]
 		m := tgbotapi.NewPhoto(userID, tgbotapi.FilePath(photo.FileID))
@@ -186,7 +187,13 @@ func (h *Handler) handleBan(message *tgbotapi.Message) {
 	var parseErr string
 
 	if message.ReplyToMessage != nil {
-		userID = message.ReplyToMessage.From.ID
+		originalID := message.ReplyToMessage.MessageID
+		uid, exists := h.store.GetMessageUser(originalID)
+		if !exists {
+			h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, h.settings.Get("aeror_msg")))
+			return
+		}
+		userID = uid
 		if len(args) < 1 {
 			parseErr = h.settings.Get("ban_usage_msg")
 		} else {
@@ -405,7 +412,6 @@ func isUpdateableFile(fname string) bool {
 	}
 	return false
 }
-
 
 func (h *Handler) handleSettings(message *tgbotapi.Message) {
 	if message.Chat.ID != h.adminID {
