@@ -1,0 +1,17 @@
+[Unit]
+Description=Telegram Connection Bot
+After=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/tgbot
+EnvironmentFile=/opt/tgbot/.env
+ExecStart=/opt/tgbot/tgbot
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
