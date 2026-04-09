@@ -49,7 +49,7 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-print_step "ШАГ 1/6: Проверка установки"
+print_step "ШАГ 1/5: Проверка установки"
 
 if [ ! -d "$INSTALL_DIR" ]; then
     print_error "Бот не установлен. Сначала запустите install.sh"
@@ -61,22 +61,16 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
     exit 1
 fi
 
-if [ ! -f "$INSTALL_DIR/tgbot" ]; then
-    print_error "Бинарный файл бота не найден. Бот установлен некорректно."
-    exit 1
-fi
-
-if ! systemctl list-unit-files | grep -q ${SERVICE_NAME}.service 2>/dev/null; then
-    if [ ! -f "/etc/init.d/tgbot" ]; then
-        print_error "Сервис бота не найден. Бот установлен некорректно."
-        exit 1
-    fi
+if ! command -v git &> /dev/null; then
+    print_info "Установка git..."
+    apt-get update -qq
+    apt-get install -y -qq git
 fi
 
 print_success "Бот найден: $INSTALL_DIR"
 
 echo ""
-print_step "ШАГ 2/6: Клонирование репозитория"
+print_step "ШАГ 2/5: Клонирование репозитория"
 
 TEMP_DIR=$(mktemp -d)
 
@@ -84,12 +78,6 @@ cleanup() {
     rm -rf "$TEMP_DIR"
 }
 trap cleanup EXIT
-
-if ! command -v git &> /dev/null; then
-    print_info "Установка git..."
-    apt-get update -qq
-    apt-get install -y -qq git
-fi
 
 git clone --depth 1 "$REPO_URL" "$TEMP_DIR" 2>/dev/null
 
@@ -101,20 +89,7 @@ fi
 print_success "Репозиторий клонирован"
 
 echo ""
-print_step "ШАГ 3/6: Остановка сервиса"
-
-if systemctl is-active --quiet ${SERVICE_NAME} 2>/dev/null; then
-    systemctl stop ${SERVICE_NAME}
-    print_success "Сервис остановлен"
-elif [ -f "/etc/init.d/tgbot" ]; then
-    /etc/init.d/tgbot stop
-    print_success "Сервис остановлен (init)"
-else
-    print_info "Сервис не запущен"
-fi
-
-echo ""
-print_step "ШАГ 4/6: Сохранение данных"
+print_step "ШАГ 3/5: Сохранение данных"
 
 BACKUP_ENV=$(cat "$INSTALL_DIR/.env" 2>/dev/null || echo "")
 BACKUP_DB_EXISTS=false
@@ -130,7 +105,7 @@ else
 fi
 
 echo ""
-print_step "ШАГ 5/6: Копирование и сборка"
+print_step "ШАГ 4/5: Копирование и сборка"
 
 cp -r "$TEMP_DIR/cmd" "$INSTALL_DIR/"
 cp -r "$TEMP_DIR/internal" "$INSTALL_DIR/"
@@ -156,20 +131,38 @@ chmod +x "$INSTALL_DIR/tgbot"
 print_success "Файлы обновлены и собраны"
 
 echo ""
-print_step "ШАГ 6/6: Запуск сервиса"
+print_step "ШАГ 5/5: Перезапуск бота"
 
-if command -v systemctl &> /dev/null; then
-    systemctl start ${SERVICE_NAME}
+HAS_SYSTEMD=false
+if command -v systemctl &> /dev/null && systemctl list-unit-files | grep -q ${SERVICE_NAME}.service 2>/dev/null; then
+    HAS_SYSTEMD=true
+fi
+
+if [ "$HAS_SYSTEMD" = true ]; then
+    echo -e "${YELLOW}ℹ️  Перезапуск сервиса через systemctl...${NC}"
+    systemctl restart ${SERVICE_NAME}
+    sleep 2
     if systemctl is-active --quiet ${SERVICE_NAME}; then
-        print_success "Сервис запущен (systemd)"
+        print_success "Сервис перезапущен (systemd)"
     else
         print_error "Ошибка запуска"
         print_info "Проверьте: journalctl -u ${SERVICE_NAME} -f"
         exit 1
     fi
 elif [ -f "/etc/init.d/tgbot" ]; then
-    /etc/init.d/tgbot start
-    print_success "Сервис запущен (init)"
+    echo -e "${YELLOW}ℹ️  Перезапуск сервиса через init.d...${NC}"
+    /etc/init.d/tgbot restart
+    print_success "Сервис перезапущен (init)"
+else
+    echo -e "${YELLOW}ℹ️  Сервис не найден. Запуск вручную...${NC}"
+    if pgrep -f "$INSTALL_DIR/tgbot" > /dev/null 2>&1; then
+        kill $(pgrep -f "$INSTALL_DIR/tgbot") 2>/dev/null
+        sleep 2
+    fi
+    cd "$INSTALL_DIR"
+    . "$INSTALL_DIR/.env"
+    nohup "$INSTALL_DIR/tgbot" > /var/log/tgbot.log 2>&1 &
+    print_success "Бот запущен вручную"
 fi
 
 echo ""

@@ -66,6 +66,8 @@ func (h *Handler) HandleUpdate(update tgbotapi.Update) {
 			h.handleUnban(msg)
 		case "update":
 			h.handleUpdate(msg)
+		case "resetsettings":
+			h.handleResetSettings(msg)
 		}
 		return
 	}
@@ -77,8 +79,18 @@ func (h *Handler) HandleUpdate(update tgbotapi.Update) {
 	}
 }
 
+func (h *Handler) emojiText(key, text string) string {
+	emojiID := h.settings.Get(key)
+	if emojiID == "" {
+		return text
+	}
+	return fmt.Sprintf(`<tg-emoji emoji-id="%s">%s</tg-emoji>`, emojiID, text)
+}
+
 func (h *Handler) handleStart(message *tgbotapi.Message) {
-	msg := tgbotapi.NewMessage(message.Chat.ID, h.settings.Get("start_msg"))
+	text := h.settings.Get("start_msg")
+	msg := tgbotapi.NewMessage(message.Chat.ID, text)
+	msg.ParseMode = "HTML"
 	h.bot.Send(msg)
 }
 
@@ -221,6 +233,16 @@ func (h *Handler) handleBan(message *tgbotapi.Message) {
 		return
 	}
 
+	if userID == h.adminID {
+		h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, "❌ Нельзя заблокировать администратора"))
+		return
+	}
+
+	if userID == h.bot.Self.ID {
+		h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, "❌ Нельзя заблокировать самого бота"))
+		return
+	}
+
 	h.store.BanUser(userID, time.Now().Add(time.Duration(hours)*time.Hour), reason)
 
 	var response string
@@ -273,15 +295,18 @@ func (h *Handler) handleUpdate(message *tgbotapi.Message) {
 	}
 
 	cmd := exec.Command("sudo", "bash", scriptPath)
-	output, err := cmd.CombinedOutput()
-
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	err := cmd.Start()
 	if err != nil {
-		h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("❌ Ошибка обновления:\n<pre>%s</pre>", string(output))))
+		h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("❌ Ошибка запуска обновления: %s", err.Error())))
 		return
 	}
 
+	cmd.Process.Release()
+
 	go func() {
-		time.Sleep(3 * time.Second)
+		time.Sleep(2 * time.Second)
 		os.Exit(0)
 	}()
 }
@@ -314,12 +339,20 @@ func (h *Handler) handleEditButton(cb *tgbotapi.CallbackQuery) {
 		}
 	}
 
+	if currentValue == "" {
+		currentValue = "(не установлено)"
+	}
+
 	preview := currentValue
 	if len(preview) > 200 {
 		preview = preview[:200] + "..."
 	}
 
-	text := fmt.Sprintf("📝 <b>%s</b>\n\n📌 Текущее значение:\n<pre>%s</pre>\n\n✏️ Отправьте новое сообщение для изменения:", label, preview)
+	safeLabel := strings.ReplaceAll(label, "/", "&#47;")
+	safePreview := strings.ReplaceAll(preview, "<", "&lt;")
+	safePreview = strings.ReplaceAll(safePreview, ">", "&gt;")
+
+	text := fmt.Sprintf("📝 %s\n\n📌 Текущее значение:\n<code>%s</code>\n\n✏️ Отправьте новое сообщение для изменения:", safeLabel, safePreview)
 
 	msg := tgbotapi.NewMessage(cb.Message.Chat.ID, text)
 	msg.ParseMode = "HTML"
@@ -346,8 +379,9 @@ func (h *Handler) sendSettingsMenu(chatID int64) {
 	var rows [][]tgbotapi.InlineKeyboardButton
 
 	for _, mk := range settings.AvailableMessages {
+		safeLabel := strings.ReplaceAll(mk.Label, "/", "&#47;")
 		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData(mk.Label, "edit_"+mk.Key),
+			tgbotapi.NewInlineKeyboardButtonData(safeLabel, "edit_"+mk.Key),
 		))
 	}
 	keyboard.InlineKeyboard = rows
@@ -384,6 +418,17 @@ func (h *Handler) handleSettingsEdit(message *tgbotapi.Message, key string) {
 	msg.ParseMode = "HTML"
 	h.bot.Send(msg)
 
+	h.sendSettingsMenu(message.Chat.ID)
+}
+
+func (h *Handler) handleResetSettings(message *tgbotapi.Message) {
+	if message.Chat.ID != h.adminID {
+		return
+	}
+
+	count := h.settings.InitDefaults()
+
+	h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("✅ Настройки проверены. Добавлено недостающих ключей: %d", count)))
 	h.sendSettingsMenu(message.Chat.ID)
 }
 

@@ -29,11 +29,14 @@ var AvailableMessages = []MessageKey{
 	{Key: "areply_msg", Label: "Сообщение админу об отправке ответа", Default: "Ваш ответ успешно отправлен пользователю!"},
 	{Key: "aeror_msg", Label: "Сообщение об ошибке получателя", Default: "Не удалось определить получателя. Возможно, сообщение устарело."},
 	{Key: "ar_msg", Label: "Подсказка админу про reply", Default: "Пожалуйста, ответьте на сообщение пользователя, чтобы отправить ему ответ."},
-	{Key: "ban_usage_msg", Label: "Инструкция /ban", Default: "Использование: /ban <user_id> <часы> [причина]\nИли ответьте на сообщение пользователя: /ban <часы> [причина]"},
+	{Key: "ban_usage_msg", Label: "Инструкция &#47;ban", Default: "Использование: /ban <user_id> <часы> [причина]\nИли ответьте на сообщение пользователя: /ban <часы> [причина]"},
 	{Key: "ban_success_msg", Label: "Сообщение о блокировке (без причины)", Default: "Пользователь {user_id} заблокирован на {hours} ч."},
 	{Key: "ban_success_reason_msg", Label: "Сообщение о блокировке (с причиной)", Default: "Пользователь {user_id} заблокирован на {hours} ч. Причина: {reason}"},
 	{Key: "ban_no_reason_msg", Label: "Текст если причина не указана", Default: "Причина не указана."},
 	{Key: "banned_msg", Label: "Сообщение заблокированному пользователю", Default: "Вы заблокированы.\nОсталось времени: {time}\nПричина: {reason}"},
+	{Key: "custom_emoji_1", Label: "Кастомный эмодзи 1 (ID)", Default: ""},
+	{Key: "custom_emoji_2", Label: "Кастомный эмодзи 2 (ID)", Default: ""},
+	{Key: "custom_emoji_3", Label: "Кастомный эмодзи 3 (ID)", Default: ""},
 }
 
 func LoadSettings(dbPath string) *BotSettings {
@@ -135,4 +138,33 @@ func (s *BotSettings) ResetToDefault(key string) error {
 		}
 	}
 	return fmt.Errorf("unknown key: %s", key)
+}
+
+func (s *BotSettings) InitDefaults() int {
+	count := 0
+	for _, mk := range AvailableMessages {
+		var exists int
+		err := s.db.QueryRow("SELECT COUNT(*) FROM messages WHERE key = ?", mk.Key).Scan(&exists)
+		if err != nil {
+			continue
+		}
+		if exists == 0 {
+			_, err = s.db.Exec("INSERT INTO messages (key, value) VALUES (?, ?)", mk.Key, mk.Default)
+			if err == nil {
+				count++
+			}
+		}
+	}
+	return count
+}
+
+func CustomEmoji(id, text string) string {
+	if id == "" {
+		return text
+	}
+	return fmt.Sprintf(`<tg-emoji emoji-id="%s">%s</tg-emoji>`, id, text)
+}
+
+func (s *BotSettings) GetEmoji(key string) string {
+	return s.Get(key)
 }
