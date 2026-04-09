@@ -52,14 +52,27 @@ fi
 
 print_step "ШАГ 1/7: Проверка зависимостей"
 
+GO_REQUIRED="1.19"
+
 if ! command -v go &> /dev/null; then
     print_info "Go не установлен. Установка..."
     apt-get update -qq
     apt-get install -y -qq golang-go
     print_success "Go установлен"
 else
-    GO_VERSION=$(go version)
-    print_success "Go найден: $GO_VERSION"
+    GO_VERSION=$(go version | grep -oP 'go\K[0-9]+\.[0-9]+')
+    GO_REQ_MAJOR=$(echo "$GO_REQUIRED" | cut -d. -f1)
+    GO_REQ_MINOR=$(echo "$GO_REQUIRED" | cut -d. -f2)
+    GO_INST_MAJOR=$(echo "$GO_VERSION" | cut -d. -f1)
+    GO_INST_MINOR=$(echo "$GO_VERSION" | cut -d. -f2)
+
+    if [ "$GO_INST_MAJOR" -gt "$GO_REQ_MAJOR" ] || { [ "$GO_INST_MAJOR" -eq "$GO_REQ_MAJOR" ] && [ "$GO_INST_MINOR" -ge "$GO_REQ_MINOR" ]; }; then
+        print_success "Go найден: $(go version | grep -oP 'go\K[0-9.]+')"
+    else
+        print_error "Требуется Go $GO_REQUIRED или новее. У вас: $GO_VERSION"
+        print_info "Обновите Go: https://go.dev/dl/"
+        exit 1
+    fi
 fi
 
 print_info "Установка build-зависимостей для SQLite..."
