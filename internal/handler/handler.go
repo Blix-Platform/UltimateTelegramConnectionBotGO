@@ -27,9 +27,9 @@ type Handler struct {
 	mu              sync.Mutex
 	editingAdmins   map[int64]string
 	currentCategory map[int64]string
-	linkStep        map[int64]string // "label" or "url" for multi-step link input
-	linkKey         map[int64]string // which key is being edited for link
-	linkData        map[int64]string // stores the label while asking for URL
+	linkStep        map[int64]string 
+	linkKey         map[int64]string 
+	linkData        map[int64]string 
 }
 
 func New(bot *tgbotapi.BotAPI, s *store.Store, st *settings.BotSettings, adminID int64) *Handler {
