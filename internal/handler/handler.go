@@ -89,6 +89,8 @@ func (h *Handler) HandleUpdate(update tgbotapi.Update) {
 			h.handleUpdate(msg)
 		case "resetsettings":
 			h.handleResetSettings(msg)
+		case "resetms":
+			h.handleResetMessage(msg)
 		case "version":
 			h.handleVersion(msg)
 		case "cancel":
@@ -1192,6 +1194,49 @@ func (h *Handler) handleResetSettings(message *tgbotapi.Message) {
 
 	h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("✅ Настройки проверены. Добавлено недостающих ключей: %d", count)))
 	h.sendCategoriesMenu(message.Chat.ID)
+}
+
+func (h *Handler) handleResetMessage(message *tgbotapi.Message) {
+	if message.Chat.ID != h.adminID {
+		return
+	}
+
+	args := strings.Fields(message.Text)
+	if len(args) < 2 {
+		h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, "Использование: /resetms <ключ>\n\nДоступные ключи: start_msg, take_msg, gift_msg, fgift_msg, otvet_msg, areply_msg, aeror_msg, ar_msg, ban_usage_msg, ban_success_msg, ban_success_reason_msg, ban_no_reason_msg, banned_msg, unban_success_msg, unban_usage_msg"))
+		return
+	}
+
+	key := args[1]
+
+	var found bool
+	for _, mk := range settings.AvailableMessages {
+		if mk.Key == key {
+			found = true
+			if err := h.settings.ResetToDefault(key); err != nil {
+				h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("❌ Ошибка сброса: %s", err.Error())))
+				return
+			}
+			// Also remove associated photo
+			h.settings.DeletePhoto(key)
+			// Also remove associated button
+			h.settings.DeleteButton(key)
+			h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("✅ <b>%s</b> сброшено до значения по умолчанию:\n\n<pre>%s</pre>", mk.Label, mk.Default)))
+			break
+		}
+	}
+
+	if !found {
+		h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("❌ Ключ <code>%s</code> не найден. Доступные ключи:\n\n<pre>%s</pre>", key, listAllKeys())))
+	}
+}
+
+func listAllKeys() string {
+	var keys []string
+	for _, mk := range settings.AvailableMessages {
+		keys = append(keys, mk.Key)
+	}
+	return strings.Join(keys, "\n")
 }
 
 func (h *Handler) handleVersion(message *tgbotapi.Message) {
