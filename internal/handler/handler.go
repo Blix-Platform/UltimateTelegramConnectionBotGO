@@ -79,18 +79,8 @@ func (h *Handler) HandleUpdate(update tgbotapi.Update) {
 	}
 }
 
-func (h *Handler) emojiText(key, text string) string {
-	emojiID := h.settings.Get(key)
-	if emojiID == "" {
-		return text
-	}
-	return fmt.Sprintf(`<tg-emoji emoji-id="%s">%s</tg-emoji>`, emojiID, text)
-}
-
 func (h *Handler) handleStart(message *tgbotapi.Message) {
-	text := h.settings.Get("start_msg")
-	msg := tgbotapi.NewMessage(message.Chat.ID, text)
-	msg.ParseMode = "HTML"
+	msg := tgbotapi.NewMessage(message.Chat.ID, h.settings.Get("start_msg"))
 	h.bot.Send(msg)
 }
 

@@ -34,9 +34,6 @@ var AvailableMessages = []MessageKey{
 	{Key: "ban_success_reason_msg", Label: "Сообщение о блокировке (с причиной)", Default: "Пользователь {user_id} заблокирован на {hours} ч. Причина: {reason}"},
 	{Key: "ban_no_reason_msg", Label: "Текст если причина не указана", Default: "Причина не указана."},
 	{Key: "banned_msg", Label: "Сообщение заблокированному пользователю", Default: "Вы заблокированы.\nОсталось времени: {time}\nПричина: {reason}"},
-	{Key: "custom_emoji_1", Label: "Кастомный эмодзи 1 (ID)", Default: ""},
-	{Key: "custom_emoji_2", Label: "Кастомный эмодзи 2 (ID)", Default: ""},
-	{Key: "custom_emoji_3", Label: "Кастомный эмодзи 3 (ID)", Default: ""},
 }
 
 func LoadSettings(dbPath string) *BotSettings {
@@ -156,15 +153,4 @@ func (s *BotSettings) InitDefaults() int {
 		}
 	}
 	return count
-}
-
-func CustomEmoji(id, text string) string {
-	if id == "" {
-		return text
-	}
-	return fmt.Sprintf(`<tg-emoji emoji-id="%s">%s</tg-emoji>`, id, text)
-}
-
-func (s *BotSettings) GetEmoji(key string) string {
-	return s.Get(key)
 }
