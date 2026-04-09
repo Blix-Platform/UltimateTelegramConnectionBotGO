@@ -54,26 +54,53 @@ print_step "ШАГ 1/7: Проверка зависимостей"
 
 GO_REQUIRED="1.19"
 
+install_go() {
+    print_info "Установка Go..."
+
+    if ! command -v curl &> /dev/null; then
+        apt-get update -qq
+        apt-get install -y -qq curl
+    fi
+
+    GO_VERSION_LATEST=$(curl -fsSL https://go.dev/VERSION?m=text | head -1)
+    GO_URL="https://golang.org/dl/${GO_VERSION_LATEST}.linux-amd64.tar.gz"
+
+    rm -rf /usr/local/go
+    curl -fsSL "$GO_URL" | tar -C /usr/local -xz
+
+    if [ -f /usr/local/go/bin/go ]; then
+        ln -sf /usr/local/go/bin/go /usr/local/bin/go
+        ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+        export PATH="/usr/local/go/bin:$PATH"
+        export GOROOT=/usr/local/go
+        print_success "Go установлен: $(/usr/local/go/bin/go version | grep -oP 'go\K[0-9.]+')"
+    else
+        print_error "Ошибка установки Go"
+        exit 1
+    fi
+}
+
 if ! command -v go &> /dev/null; then
-    print_info "Go не установлен. Установка..."
-    apt-get update -qq
-    apt-get install -y -qq golang-go
-    print_success "Go установлен"
+    install_go
 else
-    GO_VERSION=$(go version | grep -oP 'go\K[0-9]+\.[0-9]+')
+    GO_BIN=go
+    [ -f /usr/local/go/bin/go ] && GO_BIN=/usr/local/go/bin/go
+    GO_VERSION=$($GO_BIN version | grep -oP 'go\K[0-9]+\.[0-9]+')
     GO_REQ_MAJOR=$(echo "$GO_REQUIRED" | cut -d. -f1)
     GO_REQ_MINOR=$(echo "$GO_REQUIRED" | cut -d. -f2)
     GO_INST_MAJOR=$(echo "$GO_VERSION" | cut -d. -f1)
     GO_INST_MINOR=$(echo "$GO_VERSION" | cut -d. -f2)
 
     if [ "$GO_INST_MAJOR" -gt "$GO_REQ_MAJOR" ] || { [ "$GO_INST_MAJOR" -eq "$GO_REQ_MAJOR" ] && [ "$GO_INST_MINOR" -ge "$GO_REQ_MINOR" ]; }; then
-        print_success "Go найден: $(go version | grep -oP 'go\K[0-9.]+')"
+        print_success "Go найден: $($GO_BIN version | grep -oP 'go\K[0-9.]+')"
     else
-        print_error "Требуется Go $GO_REQUIRED или новее. У вас: $GO_VERSION"
-        print_info "Обновите Go: https://go.dev/dl/"
-        exit 1
+        print_info "Go устарел (нужен $GO_REQUIRED, у вас $GO_VERSION). Обновление..."
+        install_go
     fi
 fi
+
+export PATH="/usr/local/go/bin:$PATH"
+export GOROOT=/usr/local/go
 
 print_info "Установка build-зависимостей для SQLite..."
 apt-get update -qq
