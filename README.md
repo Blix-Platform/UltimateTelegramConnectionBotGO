@@ -24,7 +24,7 @@ Telegram-бот на Go для двусторонней связи с подде
 
 ### Linux
 ```bash
-curl -fsSL https://raw.githubusercontent.com/pavlyska/UltimateTelegramConnectionBotGO/main/install.sh -o install.sh && sudo bash install.sh
+curl -fsSL https://raw.githubusercontent.com/Blix-Platform/UltimateTelegramConnectionBotGO/main/install.sh -o install.sh && sudo bash install.sh
 ```
 
 Или если репозиторий уже клонирован:
@@ -47,7 +47,7 @@ sudo bash install.sh
 
 1. Клонируйте репозиторий:
    ```bash
-   git clone https://github.com/pavlyska/UltimateTelegramConnectionBotGO.git
+   git clone https://github.com/Blix-Platform/UltimateTelegramConnectionBotGO.git
    cd UltimateTelegramConnectionBotGO
    ```
 
@@ -213,7 +213,7 @@ UltimateTelegramConnectionBotGO/
 
 ### Linux (одной командой)
 ```bash
-curl -fsSL https://raw.githubusercontent.com/pavlyska/UltimateTelegramConnectionBotGO/main/uninstall.sh -o uninstall.sh && sudo bash uninstall.sh
+curl -fsSL https://raw.githubusercontent.com/Blix-Platform/UltimateTelegramConnectionBotGO/main/uninstall.sh -o uninstall.sh && sudo bash uninstall.sh
 ```
 
 Или из директории проекта:
