@@ -144,26 +144,33 @@ func (h *Handler) handleAdminMessage(message *tgbotapi.Message) {
 		if photoFileID := h.settings.GetPhoto("otvet_msg"); photoFileID != "" {
 			m := tgbotapi.NewPhoto(userID, tgbotapi.FileID(photoFileID))
 			m.Caption = fullText
+			m.ParseMode = "HTML"
 			_, err = h.bot.Send(m)
 		} else {
-			_, err = h.bot.Send(tgbotapi.NewMessage(userID, fullText))
+			m := tgbotapi.NewMessage(userID, fullText)
+			m.ParseMode = "HTML"
+			_, err = h.bot.Send(m)
 		}
 	case len(message.Photo) > 0:
 		photo := message.Photo[len(message.Photo)-1]
 		m := tgbotapi.NewPhoto(userID, tgbotapi.FilePath(photo.FileID))
 		m.Caption = caption
+		m.ParseMode = "HTML"
 		_, err = h.bot.Send(m)
 	case message.Video != nil:
 		m := tgbotapi.NewVideo(userID, tgbotapi.FilePath(message.Video.FileID))
 		m.Caption = caption
+		m.ParseMode = "HTML"
 		_, err = h.bot.Send(m)
 	case message.Document != nil:
 		m := tgbotapi.NewDocument(userID, tgbotapi.FilePath(message.Document.FileID))
 		m.Caption = caption
+		m.ParseMode = "HTML"
 		_, err = h.bot.Send(m)
 	case message.Audio != nil:
 		m := tgbotapi.NewAudio(userID, tgbotapi.FilePath(message.Audio.FileID))
 		m.Caption = caption
+		m.ParseMode = "HTML"
 		_, err = h.bot.Send(m)
 	case message.Voice != nil:
 		_, err = h.bot.Send(tgbotapi.NewVoice(userID, tgbotapi.FilePath(message.Voice.FileID)))
@@ -186,9 +193,12 @@ func (h *Handler) sendSettingsMessage(chatID int64, key string) {
 	if photoFileID != "" {
 		msg := tgbotapi.NewPhoto(chatID, tgbotapi.FileID(photoFileID))
 		msg.Caption = text
+		msg.ParseMode = "HTML"
 		h.bot.Send(msg)
 	} else if text != "" {
-		h.bot.Send(tgbotapi.NewMessage(chatID, text))
+		msg := tgbotapi.NewMessage(chatID, text)
+		msg.ParseMode = "HTML"
+		h.bot.Send(msg)
 	}
 }
 
@@ -814,8 +824,8 @@ func (h *Handler) handleEditButton(cb *tgbotapi.CallbackQuery) {
 	}
 
 	preview := currentValue
-	if len(preview) > 200 {
-		preview = preview[:200] + "..."
+	if len(preview) > 300 {
+		preview = preview[:300] + "..."
 	}
 
 	photoInfo := ""
@@ -827,7 +837,16 @@ func (h *Handler) handleEditButton(cb *tgbotapi.CallbackQuery) {
 	safePreview := strings.ReplaceAll(preview, "<", "&lt;")
 	safePreview = strings.ReplaceAll(safePreview, ">", "&gt;")
 
-	text := fmt.Sprintf("📝 %s\n\n📌 Текущее значение:\n<code>%s</code>%s\n\n✏️ Отправьте новое сообщение для изменения:", safeLabel, safePreview, photoInfo)
+	text := fmt.Sprintf(
+		"📝 %s\n\n📌 Текущее значение:\n<code>%s</code>%s\n\n✏️ Отправьте новое сообщение для изменения:\n\n💡 <b>Поддерживается HTML:</b>\n"+
+			"<b>жирный</b> → <code>&lt;b&gt;жирный&lt;/b&gt;</code>\n"+
+			"<i>курсив</i> → <code>&lt;i&gt;курсив&lt;/i&gt;</code>\n"+
+			"<a href=\"https://example.com\">ссылка</a> → <code>&lt;a href=\"url\"&gt;ссылка&lt;/a&gt;</code>\n"+
+			"<code>код</code> → <code>&lt;code&gt;код&lt;/code&gt;</code>\n"+
+			"<u>подчёркнутый</u> → <code>&lt;u&gt;подчёркнутый&lt;/u&gt;</code>\n"+
+			"<s>зачёркнутый</s> → <code>&lt;s&gt;зачёркнутый&lt;/s&gt;</code>",
+		safeLabel, safePreview, photoInfo,
+	)
 
 	msg := tgbotapi.NewMessage(cb.Message.Chat.ID, text)
 	msg.ParseMode = "HTML"
@@ -859,6 +878,7 @@ func (h *Handler) handleBackToSettings(cb *tgbotapi.CallbackQuery) {
 func (h *Handler) handleSettingsEdit(message *tgbotapi.Message, key string) {
 	var textValue string
 	var photoValue string
+	var hasPhotoBefore = h.settings.HasPhoto(key)
 
 	// Handle photo if present
 	if len(message.Photo) > 0 {
@@ -872,6 +892,10 @@ func (h *Handler) handleSettingsEdit(message *tgbotapi.Message, key string) {
 		}
 	} else {
 		textValue = message.Text
+		// No photo sent — keep existing photo if any
+		if hasPhotoBefore {
+			photoValue = h.settings.GetPhoto(key)
+		}
 	}
 
 	// Validate text is not empty
@@ -883,7 +907,7 @@ func (h *Handler) handleSettingsEdit(message *tgbotapi.Message, key string) {
 		return
 	}
 
-	// Save photo if present
+	// Save photo if changed or present
 	if photoValue != "" {
 		if err := h.settings.SetPhoto(key, photoValue); err != nil {
 			h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, "❌ Ошибка сохранения фото"))
