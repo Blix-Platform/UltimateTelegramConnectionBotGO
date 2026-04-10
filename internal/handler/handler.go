@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -155,13 +157,15 @@ func (h *Handler) handleAdminMessage(message *tgbotapi.Message) {
 
 	caption := h.settings.Get("otvet_msg")
 	if message.Caption != "" {
-		caption = fmt.Sprintf("%s\n%s", h.settings.Get("otvet_msg"), message.Caption)
+		formattedCaption := entitiesToHTML(message.Caption, message.CaptionEntities)
+		caption = fmt.Sprintf("%s\n%s", h.settings.Get("otvet_msg"), formattedCaption)
 	}
 
 	var err error
 	switch {
 	case message.Text != "":
-		fullText := fmt.Sprintf("%s\n%s", h.settings.Get("otvet_msg"), message.Text)
+		formattedText := entitiesToHTML(message.Text, message.Entities)
+		fullText := fmt.Sprintf("%s\n%s", h.settings.Get("otvet_msg"), formattedText)
 		if photoFileID := h.settings.GetPhoto("otvet_msg"); photoFileID != "" {
 			m := tgbotapi.NewPhoto(userID, tgbotapi.FileID(photoFileID))
 			m.Caption = fullText
@@ -1487,4 +1491,98 @@ func escapeHTML(s string) string {
 	s = strings.ReplaceAll(s, "<", "&lt;")
 	s = strings.ReplaceAll(s, ">", "&gt;")
 	return s
+}
+
+// entitiesToHTML converts message text with entities into HTML markup.
+// Supports nested formatting: bold, italic, underline, strikethrough, code, pre, text_link.
+func entitiesToHTML(text string, entities []tgbotapi.MessageEntity) string {
+	if len(entities) == 0 {
+		return escapeHTML(text)
+	}
+
+	// Collect all "events" (open/close tags at specific rune positions)
+	type event struct {
+		pos      int
+		priority int    // close before open at same position
+		tag      string // opening tag or closing tag
+		isClose  bool
+	}
+
+	// Priority: close tags first at same position (so </b><i> not <i></b>)
+	priorityOpen := 1
+	priorityClose := 0
+
+	var events []event
+
+	for _, e := range entities {
+		support := true
+		var openTag, closeTag string
+
+		switch e.Type {
+		case "bold":
+			openTag = "<b>"
+			closeTag = "</b>"
+		case "italic":
+			openTag = "<i>"
+			closeTag = "</i>"
+		case "underline":
+			openTag = "<u>"
+			closeTag = "</u>"
+		case "strikethrough":
+			openTag = "<s>"
+			closeTag = "</s>"
+		case "code":
+			openTag = "<code>"
+			closeTag = "</code>"
+		case "pre":
+			openTag = "<pre>"
+			closeTag = "</pre>"
+		case "text_link":
+			openTag = fmt.Sprintf(`<a href="%s">`, escapeHTML(e.URL))
+			closeTag = "</a>"
+		default:
+			support = false
+		}
+
+		if support {
+			events = append(events,
+				event{pos: e.Offset, priority: priorityOpen, tag: openTag, isClose: false},
+				event{pos: e.Offset + e.Length, priority: priorityClose, tag: closeTag, isClose: true},
+			)
+		}
+	}
+
+	// Sort: by position, then close tags before open tags at same position
+	sort.SliceStable(events, func(i, j int) bool {
+		if events[i].pos != events[j].pos {
+			return events[i].pos < events[j].pos
+		}
+		if events[i].priority != events[j].priority {
+			return events[i].priority < events[j].priority
+		}
+		// Within close tags, reverse order (LIFO)
+		if events[i].isClose && events[j].isClose {
+			return i > j
+		}
+		return i < j
+	})
+
+	runes := []rune(text)
+	var buf bytes.Buffer
+	pos := 0
+	eventIdx := 0
+
+	for pos <= len(runes) {
+		// Process all events at current position
+		for eventIdx < len(events) && events[eventIdx].pos == pos {
+			buf.WriteString(events[eventIdx].tag)
+			eventIdx++
+		}
+		if pos < len(runes) {
+			buf.WriteRune(runes[pos])
+		}
+		pos++
+	}
+
+	return buf.String()
 }
