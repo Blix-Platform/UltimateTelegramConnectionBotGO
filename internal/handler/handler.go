@@ -1344,8 +1344,13 @@ func messageEntitiesToHTML(text string, entities []tgbotapi.MessageEntity) strin
 		if s < 0 || en > n || s >= en {
 			continue
 		}
+		// Debug: log all entities for troubleshooting
+		log.Printf("[DEBUG] Entity: Type=%s, Offset=%d, Length=%d, URL=%s, Text=%q", e.Type, e.Offset, e.Length, e.URL, string(runes[s:en]))
 		switch e.Type {
 		case "text_link":
+			if e.URL == "" {
+				log.Printf("[WARN] text_link entity has empty URL at offset %d", e.Offset)
+			}
 			parsed = append(parsed, ent{s, en, "link", e.URL, 0})
 		case "url":
 			// Plain URL entity — make it clickable like a link
