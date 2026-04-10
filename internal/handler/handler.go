@@ -177,27 +177,27 @@ func (h *Handler) handleAdminMessage(message *tgbotapi.Message) {
 		}
 	case len(message.Photo) > 0:
 		photo := message.Photo[len(message.Photo)-1]
-		m := tgbotapi.NewPhoto(userID, tgbotapi.FilePath(photo.FileID))
+		m := tgbotapi.NewPhoto(userID, tgbotapi.FileID(photo.FileID))
 		m.Caption = caption
 		m.ParseMode = "HTML"
 		_, err = h.bot.Send(m)
 	case message.Video != nil:
-		m := tgbotapi.NewVideo(userID, tgbotapi.FilePath(message.Video.FileID))
+		m := tgbotapi.NewVideo(userID, tgbotapi.FileID(message.Video.FileID))
 		m.Caption = caption
 		m.ParseMode = "HTML"
 		_, err = h.bot.Send(m)
 	case message.Document != nil:
-		m := tgbotapi.NewDocument(userID, tgbotapi.FilePath(message.Document.FileID))
+		m := tgbotapi.NewDocument(userID, tgbotapi.FileID(message.Document.FileID))
 		m.Caption = caption
 		m.ParseMode = "HTML"
 		_, err = h.bot.Send(m)
 	case message.Audio != nil:
-		m := tgbotapi.NewAudio(userID, tgbotapi.FilePath(message.Audio.FileID))
+		m := tgbotapi.NewAudio(userID, tgbotapi.FileID(message.Audio.FileID))
 		m.Caption = caption
 		m.ParseMode = "HTML"
 		_, err = h.bot.Send(m)
 	case message.Voice != nil:
-		_, err = h.bot.Send(tgbotapi.NewVoice(userID, tgbotapi.FilePath(message.Voice.FileID)))
+		_, err = h.bot.Send(tgbotapi.NewVoice(userID, tgbotapi.FileID(message.Voice.FileID)))
 	}
 
 	if err != nil {
