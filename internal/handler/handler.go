@@ -1347,6 +1347,10 @@ func messageEntitiesToHTML(text string, entities []tgbotapi.MessageEntity) strin
 		switch e.Type {
 		case "text_link":
 			parsed = append(parsed, ent{s, en, "link", e.URL, 0})
+		case "url":
+			// Plain URL entity — make it clickable like a link
+			urlText := string(runes[s:en])
+			parsed = append(parsed, ent{s, en, "link", urlText, 0})
 		case "text_mention":
 			parsed = append(parsed, ent{s, en, "mention", "", e.User.ID})
 		default:
