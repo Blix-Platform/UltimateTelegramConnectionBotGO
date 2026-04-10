@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"bytes"
 	"fmt"
 	"log"
 	"os"
@@ -157,14 +156,14 @@ func (h *Handler) handleAdminMessage(message *tgbotapi.Message) {
 
 	caption := h.settings.Get("otvet_msg")
 	if message.Caption != "" {
-		formattedCaption := entitiesToHTML(message.Caption, message.CaptionEntities)
+		formattedCaption := messageEntitiesToHTML(message.Caption, message.CaptionEntities)
 		caption = fmt.Sprintf("%s\n%s", h.settings.Get("otvet_msg"), formattedCaption)
 	}
 
 	var err error
 	switch {
 	case message.Text != "":
-		formattedText := entitiesToHTML(message.Text, message.Entities)
+		formattedText := messageEntitiesToHTML(message.Text, message.Entities)
 		fullText := fmt.Sprintf("%s\n%s", h.settings.Get("otvet_msg"), formattedText)
 		if photoFileID := h.settings.GetPhoto("otvet_msg"); photoFileID != "" {
 			m := tgbotapi.NewPhoto(userID, tgbotapi.FileID(photoFileID))
@@ -1312,18 +1311,12 @@ func isSupportedContent(message *tgbotapi.Message) bool {
 }
 
 // messageEntitiesToHTML converts Telegram message text and entities to HTML.
-// Handles: bold, italic, underline, strikethrough, code, pre, text_link, text_mention.
-// Supports overlapping/nested entities (e.g., bold + italic + link on the same word).
+// Handles: bold, italic, underline, strikethrough, code, pre, spoiler, text_link, text_mention.
+// Supports overlapping/nested entities (e.g. bold + italic on the same word).
 func messageEntitiesToHTML(text string, entities []tgbotapi.MessageEntity) string {
 	if len(entities) == 0 {
 		return escapeHTML(text)
 	}
-
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("Error converting entities to HTML: %v, falling back to plain text", r)
-		}
-	}()
 
 	runes := []rune(text)
 	n := len(runes)
@@ -1335,152 +1328,127 @@ func messageEntitiesToHTML(text string, entities []tgbotapi.MessageEntity) strin
 		"strikethrough": "s",
 		"code":          "code",
 		"pre":           "pre",
+		"spoiler":       "tg-spoiler",
 	}
 
-	type linkInfo struct {
-		Start     int
-		End       int
-		URL       string // empty for text_mention
-		UserID    int64
-		IsMention bool
+	type ent struct {
+		start, end int
+		typ        string
+		url        string
+		userID     int64
 	}
 
-	var links []linkInfo
-	var fmtStartClose [][3]int // {start, end, type_idx}
-
-	linkTypeIdx := -1
+	var parsed []ent
 	for _, e := range entities {
-		start := e.Offset
-		end := e.Offset + e.Length
-		if start < 0 || end > n || start >= end {
+		s, en := e.Offset, e.Offset+e.Length
+		if s < 0 || en > n || s >= en {
 			continue
 		}
-
 		switch e.Type {
 		case "text_link":
-			linkTypeIdx = len(links)
-			links = append(links, linkInfo{start, end, e.URL, 0, false})
+			parsed = append(parsed, ent{s, en, "link", e.URL, 0})
 		case "text_mention":
-			linkTypeIdx = len(links)
-			links = append(links, linkInfo{start, end, "", e.User.ID, true})
+			parsed = append(parsed, ent{s, en, "mention", "", e.User.ID})
 		default:
-			if _, ok := supportedTypes[e.Type]; ok {
-				fmtStartClose = append(fmtStartClose, [3]int{start, end, linkTypeIdx})
+			if tag, ok := supportedTypes[e.Type]; ok {
+				parsed = append(parsed, ent{s, en, tag, "", 0})
 			}
 		}
 	}
-
-	if len(links) == 0 && len(fmtStartClose) == 0 {
+	if len(parsed) == 0 {
 		return escapeHTML(text)
 	}
 
-	var result strings.Builder
+	// Collect boundary points
+	bset := map[int]bool{0: true, n: true}
+	for _, e := range parsed {
+		bset[e.start] = true
+		bset[e.end] = true
+	}
+	var bounds []int
+	for b := range bset {
+		bounds = append(bounds, b)
+	}
+	sort.Ints(bounds)
 
-	for i := 0; i < n; i++ {
-		// Check if this is a link start
-		linkIdx := -1
-		for li, lnk := range links {
-			if lnk.Start == i {
-				linkIdx = li
-				break
-			}
+	// Generate tags for an entity
+	openTag := func(e ent) string {
+		switch e.typ {
+		case "link":
+			u := strings.ReplaceAll(e.url, "&", "&amp;")
+			u = strings.ReplaceAll(u, "\"", "&quot;")
+			return fmt.Sprintf(`<a href="%s">`, u)
+		case "mention":
+			return fmt.Sprintf(`<a href="tg://user?id=%d">`, e.userID)
+		default:
+			return fmt.Sprintf("<%s>", e.typ)
 		}
-
-		if linkIdx >= 0 {
-			lnk := links[linkIdx]
-			// Collect formatting tags that exactly match this link range
-			var tags []string
-			for _, fc := range fmtStartClose {
-				if fc[0] == lnk.Start && fc[1] == lnk.End {
-					for _, e2 := range entities {
-						if e2.Offset == fc[0] && e2.Offset+e2.Length == fc[1] {
-							if name, ok := supportedTypes[e2.Type]; ok {
-								tags = append(tags, name)
-							}
-							break
-						}
-					}
-				}
-			}
-
-			linkText := escapeHTML(string(runes[lnk.Start:lnk.End]))
-
-			if lnk.IsMention {
-				result.WriteString(fmt.Sprintf("<a href=\"tg://user?id=%d\">", lnk.UserID))
-			} else {
-				url := strings.ReplaceAll(lnk.URL, "&", "&amp;")
-				url = strings.ReplaceAll(url, "\"", "&quot;")
-				result.WriteString(fmt.Sprintf("<a href=\"%s\">", url))
-			}
-			for _, t := range tags {
-				result.WriteString(fmt.Sprintf("<%s>", t))
-			}
-			result.WriteString(linkText)
-			for j := len(tags) - 1; j >= 0; j-- {
-				result.WriteString(fmt.Sprintf("</%s>", tags[j]))
-			}
-			result.WriteString("</a>")
-
-			i = lnk.End - 1
-			continue
-		}
-
-		// Skip if inside a link range
-		inLink := false
-		for _, lnk := range links {
-			if i > lnk.Start && i < lnk.End {
-				inLink = true
-				break
-			}
-		}
-		if inLink {
-			continue
-		}
-
-		// Open formatting tags that start here
-		for _, fc := range fmtStartClose {
-			if fc[0] == i && fc[2] < 0 {
-				for _, e2 := range entities {
-					if e2.Offset == fc[0] && e2.Offset+e2.Length == fc[1] {
-						if name, ok := supportedTypes[e2.Type]; ok {
-							result.WriteString(fmt.Sprintf("<%s>", name))
-						}
-						break
-					}
-				}
-			}
-		}
-
-		result.WriteString(escapeHTML(string(runes[i])))
-
-		// Close tags that end at next position
-		nextPos := i + 1
-		for _, fc := range fmtStartClose {
-			if fc[1] == nextPos && fc[2] < 0 {
-				for _, e2 := range entities {
-					if e2.Offset == fc[0] && e2.Offset+e2.Length == fc[1] {
-						if name, ok := supportedTypes[e2.Type]; ok {
-							result.WriteString(fmt.Sprintf("</%s>", name))
-						}
-						break
-					}
-				}
-			}
+	}
+	closeTag := func(e ent) string {
+		switch e.typ {
+		case "link", "mention":
+			return "</a>"
+		default:
+			return fmt.Sprintf("</%s>", e.typ)
 		}
 	}
 
-	// Close remaining tags
-	for _, fc := range fmtStartClose {
-		if fc[1] == n && fc[2] < 0 {
-			for _, e2 := range entities {
-				if e2.Offset == fc[0] && e2.Offset+e2.Length == fc[1] {
-					if name, ok := supportedTypes[e2.Type]; ok {
-						result.WriteString(fmt.Sprintf("</%s>", name))
-					}
-					break
-				}
+	hasEnt := func(list []ent, target ent) bool {
+		for _, x := range list {
+			if x.start == target.start && x.end == target.end && x.typ == target.typ {
+				return true
 			}
 		}
+		return false
+	}
+
+	var result strings.Builder
+	var prevActive []ent
+
+	for seg := 0; seg < len(bounds)-1; seg++ {
+		sStart := bounds[seg]
+		sEnd := bounds[seg+1]
+		if sStart >= sEnd {
+			continue
+		}
+
+		// Active entities in this segment (check at start position)
+		var active []ent
+		for _, e := range parsed {
+			if e.start <= sStart && sEnd <= e.end {
+				active = append(active, e)
+			}
+		}
+		// Sort: earlier start first, then original order
+		sort.SliceStable(active, func(i, j int) bool {
+			return active[i].start < active[j].start
+		})
+
+		// Close entities that were active before but not now (reverse order for LIFO)
+		for i := len(prevActive) - 1; i >= 0; i-- {
+			if !hasEnt(active, prevActive[i]) {
+				result.WriteString(closeTag(prevActive[i]))
+			}
+		}
+
+		// Open new entities not in previous set
+		for _, e := range active {
+			if !hasEnt(prevActive, e) {
+				result.WriteString(openTag(e))
+			}
+		}
+
+		// Write characters
+		for i := sStart; i < sEnd; i++ {
+			result.WriteRune(runes[i])
+		}
+
+		prevActive = active
+	}
+
+	// Close remaining
+	for i := len(prevActive) - 1; i >= 0; i-- {
+		result.WriteString(closeTag(prevActive[i]))
 	}
 
 	return result.String()
@@ -1491,98 +1459,4 @@ func escapeHTML(s string) string {
 	s = strings.ReplaceAll(s, "<", "&lt;")
 	s = strings.ReplaceAll(s, ">", "&gt;")
 	return s
-}
-
-// entitiesToHTML converts message text with entities into HTML markup.
-// Supports nested formatting: bold, italic, underline, strikethrough, code, pre, text_link.
-func entitiesToHTML(text string, entities []tgbotapi.MessageEntity) string {
-	if len(entities) == 0 {
-		return escapeHTML(text)
-	}
-
-	// Collect all "events" (open/close tags at specific rune positions)
-	type event struct {
-		pos      int
-		priority int    // close before open at same position
-		tag      string // opening tag or closing tag
-		isClose  bool
-	}
-
-	// Priority: close tags first at same position (so </b><i> not <i></b>)
-	priorityOpen := 1
-	priorityClose := 0
-
-	var events []event
-
-	for _, e := range entities {
-		support := true
-		var openTag, closeTag string
-
-		switch e.Type {
-		case "bold":
-			openTag = "<b>"
-			closeTag = "</b>"
-		case "italic":
-			openTag = "<i>"
-			closeTag = "</i>"
-		case "underline":
-			openTag = "<u>"
-			closeTag = "</u>"
-		case "strikethrough":
-			openTag = "<s>"
-			closeTag = "</s>"
-		case "code":
-			openTag = "<code>"
-			closeTag = "</code>"
-		case "pre":
-			openTag = "<pre>"
-			closeTag = "</pre>"
-		case "text_link":
-			openTag = fmt.Sprintf(`<a href="%s">`, escapeHTML(e.URL))
-			closeTag = "</a>"
-		default:
-			support = false
-		}
-
-		if support {
-			events = append(events,
-				event{pos: e.Offset, priority: priorityOpen, tag: openTag, isClose: false},
-				event{pos: e.Offset + e.Length, priority: priorityClose, tag: closeTag, isClose: true},
-			)
-		}
-	}
-
-	// Sort: by position, then close tags before open tags at same position
-	sort.SliceStable(events, func(i, j int) bool {
-		if events[i].pos != events[j].pos {
-			return events[i].pos < events[j].pos
-		}
-		if events[i].priority != events[j].priority {
-			return events[i].priority < events[j].priority
-		}
-		// Within close tags, reverse order (LIFO)
-		if events[i].isClose && events[j].isClose {
-			return i > j
-		}
-		return i < j
-	})
-
-	runes := []rune(text)
-	var buf bytes.Buffer
-	pos := 0
-	eventIdx := 0
-
-	for pos <= len(runes) {
-		// Process all events at current position
-		for eventIdx < len(events) && events[eventIdx].pos == pos {
-			buf.WriteString(events[eventIdx].tag)
-			eventIdx++
-		}
-		if pos < len(runes) {
-			buf.WriteRune(runes[pos])
-		}
-		pos++
-	}
-
-	return buf.String()
 }
