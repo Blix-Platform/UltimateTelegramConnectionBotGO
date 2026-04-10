@@ -60,7 +60,11 @@ func (h *Handler) HandleUpdate(update tgbotapi.Update) {
 		linkKeyVal := h.linkKey[msg.Chat.ID]
 		h.mu.Unlock()
 
-		if linkStepVal != "" && !msg.IsCommand() {
+		if linkStepVal != "" {
+			if msg.IsCommand() && msg.Command() == "cancel" {
+				h.handleCancelCommand(msg)
+				return
+			}
 			h.handleLinkStep(msg, linkStepVal, linkKeyVal)
 			return
 		}
@@ -69,7 +73,11 @@ func (h *Handler) HandleUpdate(update tgbotapi.Update) {
 		editingKey, isEditing := h.editingAdmins[msg.Chat.ID]
 		h.mu.Unlock()
 
-		if isEditing && !msg.IsCommand() {
+		if isEditing {
+			if msg.IsCommand() && msg.Command() == "cancel" {
+				h.handleCancelCommand(msg)
+				return
+			}
 			h.handleSettingsEdit(msg, editingKey)
 			return
 		}
