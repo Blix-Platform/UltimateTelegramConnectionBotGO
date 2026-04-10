@@ -1221,13 +1221,17 @@ func (h *Handler) handleResetMessage(message *tgbotapi.Message) {
 			h.settings.DeletePhoto(key)
 			// Also remove associated button
 			h.settings.DeleteButton(key)
-			h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("✅ <b>%s</b> сброшено до значения по умолчанию:\n\n<pre>%s</pre>", mk.Label, mk.Default)))
+			msg := tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("✅ <b>%s</b> сброшено до значения по умолчанию:\n\n<pre>%s</pre>", mk.Label, mk.Default))
+			msg.ParseMode = "HTML"
+			h.bot.Send(msg)
 			break
 		}
 	}
 
 	if !found {
-		h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("❌ Ключ <code>%s</code> не найден. Доступные ключи:\n\n<pre>%s</pre>", key, listAllKeys())))
+		msg := tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("❌ Ключ <code>%s</code> не найден. Доступные ключи:\n\n<pre>%s</pre>", key, listAllKeys()))
+		msg.ParseMode = "HTML"
+		h.bot.Send(msg)
 	}
 }
 
