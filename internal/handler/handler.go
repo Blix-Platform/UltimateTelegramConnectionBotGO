@@ -1393,13 +1393,37 @@ func messageEntitiesToHTML(text string, entities []tgbotapi.MessageEntity) strin
 		}
 	}
 
-	hasEnt := func(list []ent, target ent) bool {
-		for _, x := range list {
-			if x.start == target.start && x.end == target.end && x.typ == target.typ {
-				return true
+	// Build active entity list for a segment, sorted by (start asc, end desc).
+	// This ordering ensures valid HTML nesting: entities starting earlier are outer;
+	// among those starting at the same position, longer ones (ending later) are outer.
+	getActive := func(segStart, segEnd int) []ent {
+		var active []ent
+		for _, e := range parsed {
+			if e.start <= segStart && segEnd <= e.end {
+				active = append(active, e)
 			}
 		}
-		return false
+		sort.SliceStable(active, func(i, j int) bool {
+			if active[i].start != active[j].start {
+				return active[i].start < active[j].start
+			}
+			return active[i].end > active[j].end
+		})
+		return active
+	}
+
+	// Longest common prefix length between two sorted active lists.
+	commonPrefix := func(a, b []ent) int {
+		m := len(a)
+		if len(b) < m {
+			m = len(b)
+		}
+		for i := 0; i < m; i++ {
+			if a[i].start != b[i].start || a[i].end != b[i].end || a[i].typ != b[i].typ {
+				return i
+			}
+		}
+		return m
 	}
 
 	var result strings.Builder
@@ -1412,30 +1436,17 @@ func messageEntitiesToHTML(text string, entities []tgbotapi.MessageEntity) strin
 			continue
 		}
 
-		// Active entities in this segment (check at start position)
-		var active []ent
-		for _, e := range parsed {
-			if e.start <= sStart && sEnd <= e.end {
-				active = append(active, e)
-			}
-		}
-		// Sort: earlier start first, then original order
-		sort.SliceStable(active, func(i, j int) bool {
-			return active[i].start < active[j].start
-		})
+		active := getActive(sStart, sEnd)
+		cp := commonPrefix(prevActive, active)
 
-		// Close entities that were active before but not now (reverse order for LIFO)
-		for i := len(prevActive) - 1; i >= 0; i-- {
-			if !hasEnt(active, prevActive[i]) {
-				result.WriteString(closeTag(prevActive[i]))
-			}
+		// Close tags from prevActive that are beyond the common prefix (in reverse order)
+		for i := len(prevActive) - 1; i >= cp; i-- {
+			result.WriteString(closeTag(prevActive[i]))
 		}
 
-		// Open new entities not in previous set
-		for _, e := range active {
-			if !hasEnt(prevActive, e) {
-				result.WriteString(openTag(e))
-			}
+		// Open tags from active that are beyond the common prefix
+		for i := cp; i < len(active); i++ {
+			result.WriteString(openTag(active[i]))
 		}
 
 		// Write characters
