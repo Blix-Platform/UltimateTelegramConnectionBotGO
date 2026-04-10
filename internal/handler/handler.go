@@ -60,7 +60,6 @@ func (h *Handler) HandleUpdate(update tgbotapi.Update) {
 		linkKeyVal := h.linkKey[msg.Chat.ID]
 		h.mu.Unlock()
 
-		// Handle link creation steps
 		if linkStepVal != "" && !msg.IsCommand() {
 			h.handleLinkStep(msg, linkStepVal, linkKeyVal)
 			return
@@ -209,7 +208,6 @@ func (h *Handler) handleAdminMessage(message *tgbotapi.Message) {
 	h.sendSettingsMessage(message.Chat.ID, "areply_msg")
 }
 
-// sendSettingsMessage sends a message with optional photo attachment from settings
 func (h *Handler) sendSettingsMessage(chatID int64, key string) {
 	text := h.settings.Get(key)
 	photoFileID := h.settings.GetPhoto(key)
@@ -513,6 +511,7 @@ func (h *Handler) handleSettings(message *tgbotapi.Message) {
 }
 
 func (h *Handler) handleCallback(cb *tgbotapi.CallbackQuery) {
+	log.Printf("[DEBUG] handleCallback received: %q", cb.Data)
 	switch {
 	case cb.Data == "section_messages":
 		h.sendCategoriesMenu(cb.Message.Chat.ID)
@@ -522,6 +521,7 @@ func (h *Handler) handleCallback(cb *tgbotapi.CallbackQuery) {
 	case cb.Data == "do_update":
 		h.doUpdateFromSettings(cb)
 	case strings.HasPrefix(cb.Data, "edit_"):
+		log.Printf("[DEBUG] Routing to handleEditButton with data: %q", cb.Data)
 		h.handleEditButton(cb)
 	case cb.Data == "back_to_main_settings":
 		h.handleBackToMainSettings(cb)
@@ -643,7 +643,6 @@ func (h *Handler) handleCategoryButton(cb *tgbotapi.CallbackQuery) {
 	))
 	keyboard.InlineKeyboard = rows
 
-	// Delete the categories menu message
 	h.bot.Request(tgbotapi.DeleteMessageConfig{
 		ChatID:    cb.Message.Chat.ID,
 		MessageID: cb.Message.MessageID,
@@ -853,6 +852,14 @@ func (h *Handler) doUpdateFromSettings(cb *tgbotapi.CallbackQuery) {
 
 func (h *Handler) handleEditButton(cb *tgbotapi.CallbackQuery) {
 	key := strings.TrimPrefix(cb.Data, "edit_")
+	log.Printf("[DEBUG] handleEditButton called with key: %q", key)
+
+	if key == "" {
+		log.Printf("[ERROR] handleEditButton received empty key")
+		h.bot.Request(tgbotapi.CallbackConfig{CallbackQueryID: cb.ID, ShowAlert: true, Text: "Ошибка: пустой ключ"})
+		return
+	}
+
 	currentValue := h.settings.Get(key)
 
 	label := ""
@@ -887,18 +894,15 @@ func (h *Handler) handleEditButton(cb *tgbotapi.CallbackQuery) {
 		safeLabel, preview, btnInfo,
 	)
 
-	// Build inline keyboard with action buttons
 	keyboard := tgbotapi.NewInlineKeyboardMarkup()
 	var actionRows [][]tgbotapi.InlineKeyboardButton
 
-	// Photo actions
 	if h.settings.HasPhoto(key) {
 		actionRows = append(actionRows, tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("🗑 Удалить фото", "delete_photo"),
 		))
 	}
 
-	// Link button management
 	if hasButton {
 		actionRows = append(actionRows, tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("🔘 Удалить кнопку", "delete_button"),
@@ -909,7 +913,6 @@ func (h *Handler) handleEditButton(cb *tgbotapi.CallbackQuery) {
 		))
 	}
 
-	// Back to categories
 	actionRows = append(actionRows, tgbotapi.NewInlineKeyboardRow(
 		tgbotapi.NewInlineKeyboardButtonData("⬅️ Назад к категориям", "back_to_categories"),
 	))
@@ -967,13 +970,11 @@ func (h *Handler) handleDeletePhoto(cb *tgbotapi.CallbackQuery) {
 		return
 	}
 
-	// Delete the message and show editor again
 	h.bot.Request(tgbotapi.DeleteMessageConfig{
 		ChatID:    cb.Message.Chat.ID,
 		MessageID: cb.Message.MessageID,
 	})
 
-	// Re-send the edit view
 	fakeCB := &tgbotapi.CallbackQuery{
 		Message: cb.Message,
 		Data:    "edit_" + key,
@@ -1096,7 +1097,6 @@ func (h *Handler) handleLinkStep(message *tgbotapi.Message, step, key string) {
 
 		h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("✅ Кнопка «%s» добавлена!", label)))
 
-		// Return to editor
 		fakeCB := &tgbotapi.CallbackQuery{
 			Message: &tgbotapi.Message{Chat: &tgbotapi.Chat{ID: message.Chat.ID}},
 			Data:    "edit_" + key,
@@ -1116,26 +1116,21 @@ func (h *Handler) handleSettingsEdit(message *tgbotapi.Message, key string) {
 	var photoValue string
 	var hasPhotoBefore = h.settings.HasPhoto(key)
 
-	// Handle photo if present
 	if len(message.Photo) > 0 {
 		photo := message.Photo[len(message.Photo)-1]
 		photoValue = photo.FileID
-		// Get text from caption or message.Text, convert entities to HTML
 		if message.Caption != "" {
 			textValue = messageEntitiesToHTML(message.Caption, message.CaptionEntities)
 		} else {
 			textValue = messageEntitiesToHTML(message.Text, message.Entities)
 		}
 	} else {
-		// Convert Telegram formatting to HTML
 		textValue = messageEntitiesToHTML(message.Text, message.Entities)
-		// No photo sent — keep existing photo if any
 		if hasPhotoBefore {
 			photoValue = h.settings.GetPhoto(key)
 		}
 	}
 
-	// Validate text is not empty
 	if textValue == "" {
 		h.mu.Lock()
 		delete(h.editingAdmins, message.Chat.ID)
@@ -1144,7 +1139,6 @@ func (h *Handler) handleSettingsEdit(message *tgbotapi.Message, key string) {
 		return
 	}
 
-	// Save photo if changed or present
 	if photoValue != "" {
 		if err := h.settings.SetPhoto(key, photoValue); err != nil {
 			h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, "❌ Ошибка сохранения фото"))
@@ -1152,7 +1146,6 @@ func (h *Handler) handleSettingsEdit(message *tgbotapi.Message, key string) {
 		}
 	}
 
-	// Save text
 	if err := h.settings.Set(key, textValue); err != nil {
 		h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, "❌ Ошибка сохранения"))
 		return
@@ -1178,7 +1171,6 @@ func (h *Handler) handleSettingsEdit(message *tgbotapi.Message, key string) {
 	msg.ParseMode = "HTML"
 	h.bot.Send(msg)
 
-	// Return to the category the message belongs to
 	if cat != "" {
 		h.sendCategoryMenu(message.Chat.ID, cat)
 	} else if msgCategory != "" {
@@ -1220,9 +1212,7 @@ func (h *Handler) handleResetMessage(message *tgbotapi.Message) {
 				h.bot.Send(tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("❌ Ошибка сброса: %s", err.Error())))
 				return
 			}
-			// Also remove associated photo
 			h.settings.DeletePhoto(key)
-			// Also remove associated button
 			h.settings.DeleteButton(key)
 			msg := tgbotapi.NewMessage(message.Chat.ID, fmt.Sprintf("✅ <b>%s</b> сброшено до значения по умолчанию:\n\n<pre>%s</pre>", mk.Label, mk.Default))
 			msg.ParseMode = "HTML"
@@ -1310,9 +1300,6 @@ func isSupportedContent(message *tgbotapi.Message) bool {
 		message.Audio != nil
 }
 
-// messageEntitiesToHTML converts Telegram message text and entities to HTML.
-// Handles: bold, italic, underline, strikethrough, code, pre, spoiler, text_link, text_mention.
-// Supports overlapping/nested entities (e.g. bold + italic on the same word).
 func messageEntitiesToHTML(text string, entities []tgbotapi.MessageEntity) string {
 	if len(entities) == 0 {
 		return escapeHTML(text)
@@ -1344,7 +1331,6 @@ func messageEntitiesToHTML(text string, entities []tgbotapi.MessageEntity) strin
 		if s < 0 || en > n || s >= en {
 			continue
 		}
-		// Debug: log all entities for troubleshooting
 		log.Printf("[DEBUG] Entity: Type=%s, Offset=%d, Length=%d, URL=%s, Text=%q", e.Type, e.Offset, e.Length, e.URL, string(runes[s:en]))
 		switch e.Type {
 		case "text_link":
@@ -1353,7 +1339,6 @@ func messageEntitiesToHTML(text string, entities []tgbotapi.MessageEntity) strin
 			}
 			parsed = append(parsed, ent{s, en, "link", e.URL, 0})
 		case "url":
-			// Plain URL entity — make it clickable like a link
 			urlText := string(runes[s:en])
 			parsed = append(parsed, ent{s, en, "link", urlText, 0})
 		case "text_mention":
@@ -1368,7 +1353,6 @@ func messageEntitiesToHTML(text string, entities []tgbotapi.MessageEntity) strin
 		return escapeHTML(text)
 	}
 
-	// Collect boundary points
 	bset := map[int]bool{0: true, n: true}
 	for _, e := range parsed {
 		bset[e.start] = true
@@ -1380,7 +1364,6 @@ func messageEntitiesToHTML(text string, entities []tgbotapi.MessageEntity) strin
 	}
 	sort.Ints(bounds)
 
-	// Generate tags for an entity
 	openTag := func(e ent) string {
 		switch e.typ {
 		case "link":
@@ -1402,9 +1385,6 @@ func messageEntitiesToHTML(text string, entities []tgbotapi.MessageEntity) strin
 		}
 	}
 
-	// Build active entity list for a segment, sorted by (start asc, end desc).
-	// This ordering ensures valid HTML nesting: entities starting earlier are outer;
-	// among those starting at the same position, longer ones (ending later) are outer.
 	getActive := func(segStart, segEnd int) []ent {
 		var active []ent
 		for _, e := range parsed {
@@ -1421,7 +1401,6 @@ func messageEntitiesToHTML(text string, entities []tgbotapi.MessageEntity) strin
 		return active
 	}
 
-	// Longest common prefix length between two sorted active lists.
 	commonPrefix := func(a, b []ent) int {
 		m := len(a)
 		if len(b) < m {
@@ -1448,17 +1427,14 @@ func messageEntitiesToHTML(text string, entities []tgbotapi.MessageEntity) strin
 		active := getActive(sStart, sEnd)
 		cp := commonPrefix(prevActive, active)
 
-		// Close tags from prevActive that are beyond the common prefix (in reverse order)
 		for i := len(prevActive) - 1; i >= cp; i-- {
 			result.WriteString(closeTag(prevActive[i]))
 		}
 
-		// Open tags from active that are beyond the common prefix
 		for i := cp; i < len(active); i++ {
 			result.WriteString(openTag(active[i]))
 		}
 
-		// Write characters
 		for i := sStart; i < sEnd; i++ {
 			result.WriteRune(runes[i])
 		}
@@ -1466,7 +1442,6 @@ func messageEntitiesToHTML(text string, entities []tgbotapi.MessageEntity) strin
 		prevActive = active
 	}
 
-	// Close remaining
 	for i := len(prevActive) - 1; i >= 0; i-- {
 		result.WriteString(closeTag(prevActive[i]))
 	}
